@@ -12,7 +12,7 @@
 
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readdirSync, unlinkSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -133,6 +133,12 @@ async function main() {
   await press('KeyM');
   await sleep(150);
   if (await page.evaluate(() => CS.info().muted)) problems.push('M did not unmute');
+  // every Sound.play('name') in the source, and each fighter's special stinger, must exist
+  const src = readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const used = new Set([...src.matchAll(/Sound\.play\('([A-Za-z]+)'(?!\s*\+)/g)].map((m) => m[1]));
+  for (const id of [...src.matchAll(/\{ id: '([a-z]+)',/g)].map((m) => m[1])) used.add('sp' + id[0].toUpperCase() + id.slice(1));
+  const known = new Set(await page.evaluate(() => CS.debug.sfxNames()));
+  for (const n of used) if (!known.has(n)) problems.push(`Sound.play("${n}") has no effect defined`);
   for (const name of ['punch', 'metal', 'glass', 'crash', 'jingle', 'trombone']) {
     const lvl = await page.evaluate((n) => CS.debug.sfx(n), name);
     if (!(lvl > 0.01)) problems.push(`sound "${name}" produced no signal (peak ${lvl})`);
