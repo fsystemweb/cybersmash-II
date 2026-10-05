@@ -57,17 +57,17 @@ const CONFIG = {
  * `win` / `lose` are the results-screen lines, `color` tints their UI.
  */
 const FIGHTERS = [
-  { id: 'tromp', name: 'DONALD TROMP', color: '#ff4a3c', special: "YOU'RE FIRED!",
+  { id: 'tromp', tag: 'REAL ESTATE MOGUL. HAS THE BEST FISTS.', name: 'DONALD TROMP', color: '#ff4a3c', special: "YOU'RE FIRED!",
     win: 'TREMENDOUS SMASH. MAYBE THE BEST EVER.', lose: 'THE TIMER WAS RIGGED! TOTALLY RIGGED!' },
-  { id: 'muskrat', name: 'ELON MUSKRAT', color: '#9aa4b8', special: 'NOT-A-FLAMETHROWER',
+  { id: 'muskrat', tag: 'ROCKET RODENT. OWNS THREE OF THESE.', name: 'ELON MUSKRAT', color: '#9aa4b8', special: 'NOT-A-FLAMETHROWER',
     win: 'FULL SELF-DESTRUCTING! ...SORRY, INVESTORS.', lose: "IT'S A FEATURE, NOT A BUG." },
-  { id: 'zuck', name: 'MARK ZUCKERBOT', color: '#5ad0ff', special: 'METAVERSE TAKEDOWN',
+  { id: 'zuck', tag: 'HUMAN. DEFINITELY HUMAN. BEEP.', name: 'MARK ZUCKERBOT', color: '#5ad0ff', special: 'METAVERSE TAKEDOWN',
     win: 'ENGAGEMENT: MAXIMIZED.', lose: 'PIVOTING TO... SOMETHING ELSE.' },
-  { id: 'hassabyte', name: 'DEMIS HASSABYTE', color: '#7ab8ff', special: 'ALPHASTRIKE',
+  { id: 'hassabyte', tag: 'FOLDED PROTEINS. NOW: TRUCKS.', name: 'DEMIS HASSABYTE', color: '#7ab8ff', special: 'ALPHASTRIKE',
     win: 'AS PREDICTED. FORTY SECONDS AGO.', lose: 'FASCINATING. MORE TRAINING DATA NEEDED.' },
-  { id: 'hwatt', name: 'JENSEN HWATT', color: '#76d43a', special: 'GPU OVERCLOCK',
+  { id: 'hwatt', tag: 'LEATHER JACKET. ALWAYS. EVEN NOW.', name: 'JENSEN HWATT', color: '#76d43a', special: 'GPU OVERCLOCK',
     win: 'THE MORE YOU SMASH, THE MORE YOU SAVE!', lose: 'SHIPPING NEXT QUARTER. PROBABLY.' },
-  { id: 'oldman', name: 'SAM OLDMAN', color: '#ffb84a', special: 'AGI BEAM',
+  { id: 'oldman', tag: 'ASKS NICELY FIRST. THEN BONKS.', name: 'SAM OLDMAN', color: '#ffb84a', special: 'AGI BEAM',
     win: 'FEELS LIKE AGI TO ME.', lose: "WE'RE GONNA NEED MORE COMPUTE." },
 ];
 
@@ -2379,6 +2379,78 @@ const HUD = (() => {
   };
 })();
 
+/* ---------- Portraits: real 3D renders of the models, read back into 2D canvases ---------- */
+const Portraits = (() => {
+  const cache = new Map();
+  const pScene = new THREE.Scene();
+  pScene.add(new THREE.HemisphereLight(0xffe4cc, 0x40306a, 1.3));
+  const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(2, 3, 4); pScene.add(key);
+  const rim = new THREE.DirectionalLight(0xff5aa0, 2.4); rim.position.set(-3, 2, -3); pScene.add(rim);
+  const pCam = new THREE.PerspectiveCamera(26, 1, 0.1, 100);
+
+  // gradient backdrop card behind the bust
+  const [bc, bx] = makeCanvas(4, 32);
+  const bg = bx.createLinearGradient(0, 0, 0, 32);
+  bg.addColorStop(0, '#3a1a6a'); bg.addColorStop(0.7, '#a0306a'); bg.addColorStop(1, '#ff7a5a');
+  bx.fillStyle = bg; bx.fillRect(0, 0, 4, 32);
+  const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), Mat.basic(0xffffff, { map: canvasTexture(bc), fog: false }));
+  backdrop.position.set(0, 1.3, -2.5);
+  pScene.add(backdrop);
+  const _size = new THREE.Vector2();
+
+  /**
+   * Render `sc` from `cam` into the bottom-left w x h corner of the main canvas and copy it
+   * into a 2D canvas in the same task (avoids a GPU-stalling readPixels). The frame that
+   * follows overwrites the corner.
+   */
+  function snapshot(sc, cam, w, h) {
+    const dpr = renderer.getPixelRatio();
+    renderer.getSize(_size);
+    renderer.setRenderTarget(null);
+    renderer.setViewport(0, 0, w / dpr, h / dpr);
+    renderer.setScissor(0, 0, w / dpr, h / dpr);
+    renderer.setScissorTest(true);
+    renderer.render(sc, cam);
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, _size.x, _size.y);
+    const [c, x] = makeCanvas(w, h);
+    x.drawImage(glCanvas, 0, glCanvas.height - h, w, h, 0, 0, w, h);
+    return c;
+  }
+
+  return {
+    /** Bust portrait of fighter `index` (cached). */
+    fighter(index, size = 40, mode = 'stand', yaw = 0.25) {
+      const k = `${index}|${size}|${mode}|${yaw}`;
+      if (cache.has(k)) return cache.get(k);
+      const def = FIGHTERS[index];
+      const m = FighterKit.build(def.id);
+      m.id = def.id;
+      m.rig.root.rotation.y = yaw;
+      pScene.add(m.rig.root);
+      for (let i = 0; i < 20; i++) FighterKit.animate(m, mode, 0.25, 1 / 30); // settle into the pose
+      pCam.aspect = 1; pCam.fov = 26;
+      pCam.position.set(0.3, 1.5, 2.35); pCam.lookAt(0, 1.3, 0); pCam.updateProjectionMatrix();
+      const c = snapshot(pScene, pCam, size, size);
+      m.rig.dispose();
+      cache.set(k, c);
+      return c;
+    },
+    /** 3/4 "glamour shot" of the pristine truck in the harbor (cached). */
+    truck(w, h) {
+      const k = `truck|${w}|${h}`;
+      if (cache.has(k)) return cache.get(k);
+      const tp = Truck.root.position;
+      const cam = new THREE.PerspectiveCamera(30, w / h, 0.1, 700);
+      cam.position.set(tp.x - 5.2, 1.7, 4.6); cam.lookAt(tp.x - 0.4, 1.0, 0);
+      Stage.sky.position.copy(cam.position);
+      const c = snapshot(scene, cam, w, h);
+      cache.set(k, c);
+      return c;
+    },
+  };
+})();
+
 /* =====================================================================================
  * 11. STATES — title → select → vs → fight → results, plus the fixed-timestep main loop.
  * ===================================================================================== */
@@ -2426,34 +2498,139 @@ const States = {
     },
   },
 
+  /* ---------- Character select: six fighters on pedestals + a portrait grid ---------- */
   select: {
-    enter() { Game.view = 'harbor'; Game.fighter?.dispose(); Game.fighter = null; },
-    update() {
-      if (Input.wasPressed('left')) Game.fighterIndex = (Game.fighterIndex + FIGHTERS.length - 1) % FIGHTERS.length;
-      if (Input.wasPressed('right')) Game.fighterIndex = (Game.fighterIndex + 1) % FIGHTERS.length;
-      if (Input.wasPressed('confirm')) setState('vs');
-      if (Input.wasPressed('back')) setState('title');
-    },
-    frame() { CamRig.to(4.5, 2.4, 9, 6.5, 1.3, -1, true); },
-    hud(ctx) {
-      PixelFont.draw(ctx, 'SELECT YOUR FIGHTER', 240, 20, { scale: 2, align: 'center', color: '#fff36b' });
-      FIGHTERS.forEach((f, i) => {
-        PixelFont.draw(ctx, f.name, 240, 70 + i * 22, { scale: 2, align: 'center', color: i === Game.fighterIndex ? '#ff3c6e' : '#fff' });
+    slotX: (i) => (i - 2.5) * 2.4,
+    slotZ: (i) => -Math.abs(i - 2.5) * 0.35,
+    enter() {
+      Game.view = 'showroom';
+      Game.fighter?.dispose(); Game.fighter = null;
+      HUD.clear();
+      this.confirmT = -1;
+      this.slots = FIGHTERS.map((d, i) => {
+        const x = this.slotX(i), z = this.slotZ(i);
+        const ped = Showroom.pedestal(x, z, d.color);
+        const m = FighterKit.build(d.id);
+        m.id = d.id;
+        m.rig.root.position.set(x, Showroom.TOP, z);
+        Showroom.scene.add(m.rig.root);
+        return { m, ped, x, z, spin: i * 1.3, lift: 0 };
       });
+      this.portraits = FIGHTERS.map((_, i) => Portraits.fighter(i, 40));
+      this.camX = this.slotX(Game.fighterIndex);
+      CamRig.to(this.camX * 0.85, 1.75, 8.4, this.camX * 0.9, 1.4, 0, true);
+    },
+    exit() {
+      for (const s of this.slots) { s.m.rig.dispose(); s.ped.removeFromParent(); }
+      this.slots = [];
+    },
+    update(dt) {
+      const n = FIGHTERS.length;
+      if (this.confirmT >= 0) {
+        this.confirmT += dt;
+        if (this.confirmT > 0.95) setState('vs');
+      } else {
+        if (Input.wasPressed('left')) Game.fighterIndex = (Game.fighterIndex + n - 1) % n;
+        if (Input.wasPressed('right')) Game.fighterIndex = (Game.fighterIndex + 1) % n;
+        if (Input.wasPressed('confirm')) { this.confirmT = 0; Post.uniforms.uFlash.value = 0.7; }
+        if (Input.wasPressed('back')) setState('title');
+      }
+      this.slots.forEach((s, i) => {
+        const sel = i === Game.fighterIndex;
+        // the chosen one steps up and faces the camera; the rest idle and turn on their pedestals
+        s.lift = damp(s.lift, sel ? 0.18 : 0, 10, dt);
+        s.ped.position.y = s.lift;
+        s.m.rig.root.position.y = Showroom.TOP + s.lift;
+        s.spin += dt * 0.6;
+        const yaw = sel ? Math.sin(Game.stateTime * 1.2) * 0.25 : s.spin;
+        s.m.rig.root.rotation.y = sel ? damp(s.m.rig.root.rotation.y % (Math.PI * 2), yaw, 8, dt) : yaw;
+        const mode = sel ? (this.confirmT >= 0 ? 'victory' : 'guard') : 'stand';
+        FighterKit.animate(s.m, mode, Game.stateTime + i, dt);
+      });
+    },
+    frame(dt) {
+      this.camX = damp(this.camX, this.slotX(Game.fighterIndex), 6, dt);
+      CamRig.to(this.camX * 0.85, 1.75, 8.4, this.camX * 0.9, 1.4, 0, true);
+      Post.uniforms.uFlash.value = Math.max(0, Post.uniforms.uFlash.value - dt * 3);
+    },
+    hud(ctx) {
+      const t = Game.stateTime, def = FIGHTERS[Game.fighterIndex];
+      PixelFont.draw(ctx, 'SELECT YOUR FIGHTER', 240, 8, { scale: 3, align: 'center', color: ['#ffffff', '#fff36b', '#ff9a3c'], outline: 2 });
+      // name + special + tagline
+      HUD.plate(ctx, 110, 34, 260, 42);
+      PixelFont.draw(ctx, def.name, 240, 38, { scale: 2, align: 'center', color: ['#ffffff', def.color], pop: HUD.pop('selname', Game.fighterIndex) });
+      PixelFont.draw(ctx, 'SPECIAL: ' + def.special, 240, 55, { align: 'center', color: '#ffd23a' });
+      PixelFont.draw(ctx, def.tag, 240, 66, { align: 'center', color: '#c8b8ff', outline: 0 });
+      // portrait grid
+      const size = 40, gap = 8, w = FIGHTERS.length * (size + gap) - gap, x0 = 240 - w / 2, y0 = 200;
+      FIGHTERS.forEach((d, i) => {
+        const x = x0 + i * (size + gap), sel = i === Game.fighterIndex;
+        ctx.fillStyle = '#000'; ctx.fillRect(x - 2, y0 - 2, size + 4, size + 4);
+        ctx.fillStyle = sel ? d.color : '#3a2a5a'; ctx.fillRect(x - 1, y0 - 1, size + 2, size + 2);
+        const g = ctx.createLinearGradient(0, y0, 0, y0 + size);
+        g.addColorStop(0, sel ? '#4a2a7a' : '#22143c'); g.addColorStop(1, sel ? '#ff5a8a' : '#3a1a4a');
+        ctx.fillStyle = g; ctx.fillRect(x, y0, size, size);
+        ctx.globalAlpha = sel ? 1 : 0.7;
+        ctx.drawImage(this.portraits[i], x, y0);
+        ctx.globalAlpha = 1;
+        if (sel && Math.floor(t * 4) % 2 === 0) PixelFont.draw(ctx, '1P', x + size / 2, y0 - 11, { align: 'center', color: '#ffd23a' });
+      });
+      PixelFont.draw(ctx, '< > CHOOSE    ENTER CONFIRM    ESC BACK', 240, 252, { align: 'center', color: '#8a7ab8' });
     },
   },
 
+  /* ---------- VS splash: fighter vs. truck over a darkened, orbiting harbor ---------- */
   vs: {
-    enter() { Game.view = 'harbor'; },
-    update() { if (Game.stateTime > 2.5 || Input.wasPressed('confirm')) setState('fight'); },
-    frame() {
-      const a = -0.6 + Game.stateTime * 0.25;
-      CamRig.to(2 + Math.sin(a) * 11, 2.2, Math.cos(a) * 11, 2, 1.2, 0, true);
+    DUR: 3.4,
+    enter() {
+      Game.view = 'harbor';
+      Truck.reset(); Salesman.reset(); HUD.clear();
+      this.pf = Portraits.fighter(Game.fighterIndex, 112, 'guard', 0.7);
+      this.pt = Portraits.truck(150, 112);
+      this.slam = false;
+    },
+    exit() { Post.uniforms.uTint.value.setScalar(1); Post.uniforms.uFlash.value = 0; },
+    update() {
+      if (!this.slam && Game.stateTime > 0.38) { this.slam = true; Post.uniforms.uFlash.value = 0.85; }
+      if (Game.stateTime > this.DUR || (Game.stateTime > 0.5 && Input.wasPressed('confirm'))) setState('fight');
+    },
+    frame(dt) {
+      const a = -0.9 + Game.stateTime * 0.2, tx = Truck.root.position.x;
+      CamRig.to(tx + Math.sin(a) * 12, 3.2, Math.cos(a) * 12, tx, 1.2, 0, true);
+      Post.uniforms.uTint.value.setScalar(0.42);
+      Post.uniforms.uFlash.value = Math.max(0, Post.uniforms.uFlash.value - dt * 2.5);
     },
     hud(ctx) {
-      PixelFont.draw(ctx, FIGHTERS[Game.fighterIndex].name, 240, 60, { scale: 3, align: 'center' });
-      PixelFont.draw(ctx, 'VS', 240, 115, { scale: 6, align: 'center', color: ['#fff36b', '#ff3c6e'] });
-      PixelFont.draw(ctx, 'THE CYBERCHUNK', 240, 190, { scale: 3, align: 'center' });
+      const t = Game.stateTime, def = FIGHTERS[Game.fighterIndex];
+      const slide = 1 - ease(clamp(t / 0.35, 0, 1));
+      const offL = -slide * 280, offR = slide * 280;
+      const y0 = 34, y1 = 214;
+      // diagonal panels drawn row by row for crisp pixel edges
+      for (let y = y0; y < y1; y++) {
+        const k = (y - y0) / (y1 - y0);
+        ctx.fillStyle = k < 0.5 ? '#2a1238' : '#3a1648';
+        ctx.fillRect(offL, y, 232 - (y - y0) * 0.22, 1);
+        ctx.fillStyle = k < 0.5 ? '#141c38' : '#1c2648';
+        const xr = 248 + (y1 - y) * 0.22;
+        ctx.fillRect(xr + offR, y, 480 - xr, 1);
+      }
+      ctx.fillStyle = def.color; ctx.fillRect(offL, y0, 232, 2); ctx.fillRect(offL, y1 - 2, 192, 2);
+      ctx.fillStyle = '#000'; ctx.fillRect(Math.round(40 + offL) - 2, 44, 116, 116);
+      ctx.fillStyle = '#9ab8ff'; ctx.fillRect(248 + 40 + offR, y0, 232, 2); ctx.fillRect(248 + offR, y1 - 2, 232, 2);
+      ctx.drawImage(this.pf, Math.round(40 + offL), 46);
+      ctx.fillStyle = '#000'; ctx.fillRect(Math.round(306 + offR) - 2, 46 - 2, 154, 116);
+      ctx.drawImage(this.pt, Math.round(306 + offR), 46);
+      PixelFont.draw(ctx, def.name, 112 + offL, 166, { scale: 2, align: 'center', color: ['#ffffff', def.color] });
+      PixelFont.draw(ctx, 'SPECIAL: ' + def.special, 112 + offL, 186, { align: 'center', color: '#ffd23a' });
+      PixelFont.draw(ctx, 'THE CYBERCHUNK', 381 + offR, 166, { scale: 2, align: 'center', color: ['#ffffff', '#9ab8ff'] });
+      PixelFont.draw(ctx, 'ARMOR: ALLEGEDLY', 381 + offR, 184, { align: 'center', color: '#c8d4ff' });
+      PixelFont.draw(ctx, 'RESALE VALUE: NONE', 381 + offR, 194, { align: 'center', color: '#c8d4ff' });
+      if (t > 0.38) {
+        const k = clamp((t - 0.38) / 0.14, 0, 1);
+        const jit = t < 0.7 ? Math.round(Math.sin(t * 90) * 2) : 0;
+        PixelFont.draw(ctx, 'VS', 240 + jit, 88, { scale: 9, align: 'center', outline: 3, pop: lerp(3, 1, k) + Math.sin(t * 6) * 0.03, color: ['#ffffff', '#fff36b', '#ff9a3c', '#ff3c6e'] });
+      }
+      PixelFont.draw(ctx, 'STAGE: DOCK 7 AT SUNSET', 240, 236, { align: 'center', color: '#ffd8f0' });
     },
   },
 
