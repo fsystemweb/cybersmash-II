@@ -12,7 +12,7 @@
 
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -23,6 +23,7 @@ const OUT = path.resolve(ROOT, argVal('--out', 'screenshots/tmp'));
 const PORT = 8000 + Math.floor(Math.random() * 900);
 let URL = argVal('--url', null);
 mkdirSync(OUT, { recursive: true });
+for (const f of readdirSync(OUT)) if (/^\d\d-.*\.png$/.test(f)) unlinkSync(path.join(OUT, f)); // stale shots
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const problems = [];
@@ -150,7 +151,7 @@ async function main() {
     await shot('combat-kick');
     for (let i = 0; i < 3; i++) { await press('KeyK'); await sleep(450); }
     const info = await page.evaluate(() => CS.info());
-    if (!(info.hits >= 4 && info.truckHP < 1000)) problems.push(`attacks did not land (hits ${info.hits}, truck ${info.truckHP})`);
+    if (!(info.hits >= 4 && info.truckHP < 800)) problems.push(`attacks did not land (hits ${info.hits}, truck ${info.truckHP})`);
     // walking away and punching must whiff (range check)
     await page.keyboard.down('ArrowLeft'); await sleep(1200); await page.keyboard.up('ArrowLeft');
     const before = (await page.evaluate(() => CS.info())).hits;
@@ -183,10 +184,47 @@ async function main() {
   await sleep(1500);
   await shot('results');
 
-  // Retry goes back into a fight; make sure a second round boots cleanly.
+  // Retry → a full match played by the in-page bot must end in PERFECT.
   await press('Enter');
   await waitFor(() => ['vs', 'fight'].includes(window.CS.state), 10000, 'retry');
-  await sleep(1000);
+  if (await page.evaluate(() => !!CS.debug.bot)) {
+    const bestBefore = (await page.evaluate(() => CS.info())).best;
+    await waitState('fight');
+    await waitFor(() => CS.info().phase === 'announce' || CS.info().phase === 'play', 10000, 'announce');
+    await sleep(500);
+    await shot('announce');
+    await page.evaluate(() => CS.debug.bot(true));
+    await waitFor(() => CS.info().phase === 'end', 90000, 'bot to wreck the truck');
+    await sleep(1600);
+    await shot('perfect');
+    await page.evaluate(() => CS.debug.bot(false));
+    await waitState('results', 15000);
+    const r = await page.evaluate(() => CS.info().result);
+    console.log('  bot result:', JSON.stringify(r));
+    if (!r.win || !(r.bonus > 0) || r.total !== r.score + r.bonus) problems.push(`bot match did not end in a valid PERFECT: ${JSON.stringify(r)}`);
+    await sleep(1800);
+    await shot('results-win');
+    const best = (await page.evaluate(() => CS.info())).best;
+    if (best !== Math.max(bestBefore, r.total)) problems.push(`session best ${best} != max(${bestBefore}, ${r.total})`);
+
+    // Retry again and let the clock run out → SALE CANCELLED.
+    await press('Enter');
+    await waitState('fight');
+    await waitFor(() => CS.info().phase === 'play', 10000, 'play');
+    await page.evaluate(() => CS.debug.setTimer(1.5));
+    await waitFor(() => CS.info().phase === 'end', 10000, 'time up');
+    await sleep(2600);
+    await shot('sale-cancelled');
+    await waitState('results', 15000);
+    const r2 = await page.evaluate(() => CS.info().result);
+    if (r2.win || r2.bonus !== 0) problems.push(`time-out did not end in SALE CANCELLED: ${JSON.stringify(r2)}`);
+    if ((await page.evaluate(() => CS.info())).best !== best) problems.push('session best changed after a worse round');
+    await sleep(1200);
+    await shot('results-lose');
+    // Change fighter goes back to select
+    await press('ArrowDown'); await press('Enter');
+    await waitState('select');
+  }
 
   const info = await page.evaluate(() => window.CS.info && window.CS.info());
   if (info && info.calls > 150) problems.push(`draw calls ${info.calls} > 150 budget`);

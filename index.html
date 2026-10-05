@@ -39,7 +39,7 @@ const CONFIG = {
   MAX_FRAME_DT: 0.1,       // clamp huge frame gaps (tab switch)
   FIGHT_TIME: 40,          // seconds on the clock
   CAMERA_FOV: 28,
-  TRUCK_HP: 1000,
+  TRUCK_HP: 800,
   DENT_FROM: 0.85,         // health fraction below which hits dent the body
   // combat (damage in HP; the special is 3x a punch)
   PUNCH: { dmg: 10, power: 1, reach: 0.95, dur: 0.32, hitAt: 0.32 },
@@ -1201,6 +1201,76 @@ const Salesman = (() => {
 })();
 Stage.salesman = Salesman;
 
+/* ---------- Showroom: a separate little scene for character select and results ---------- */
+const Showroom = (() => {
+  const sc = new THREE.Scene();
+  sc.background = new THREE.Color(0x12081f);
+  sc.fog = new THREE.Fog(0x12081f, 12, 34);
+  sc.add(new THREE.HemisphereLight(0xc0a8ff, 0x1a0c2a, 1.1));
+  const key = new THREE.DirectionalLight(0xfff0d8, 2.0); key.position.set(-3, 8, 7); sc.add(key);
+  const rim = new THREE.DirectionalLight(0xff4fa0, 2.4); rim.position.set(5, 3, -6); sc.add(rim);
+  const rim2 = new THREE.DirectionalLight(0x4fd8ff, 1.6); rim2.position.set(-6, 2, -4); sc.add(rim2);
+
+  // checkerboard floor
+  const [fc, fx] = makeCanvas(32, 32);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { fx.fillStyle = (x + y) % 2 ? '#2a1846' : '#1c1032'; fx.fillRect(x * 8, y * 8, 8, 8); }
+  fx.fillStyle = '#3e2a66'; for (let i = 0; i < 4; i++) { fx.fillRect(i * 8, 0, 1, 32); fx.fillRect(0, i * 8, 32, 1); }
+  const floorTex = canvasTexture(fc, true); floorTex.repeat.set(10, 10);
+  sc.add(new THREE.Mesh(new THREE.CircleGeometry(18, 32).rotateX(-Math.PI / 2), Mat.toon(0xffffff, { map: floorTex, rim: 0 })));
+
+  // backdrop: a curved wall with neon stripes and a sunset gradient
+  const [bc, bx] = makeCanvas(8, 64);
+  const g = bx.createLinearGradient(0, 0, 0, 64);
+  g.addColorStop(0, '#0c0618'); g.addColorStop(0.55, '#3a1460'); g.addColorStop(0.8, '#c0306a'); g.addColorStop(1, '#ff8a4a');
+  bx.fillStyle = g; bx.fillRect(0, 0, 8, 64);
+  bx.fillStyle = 'rgba(255,90,180,0.85)'; for (const y of [40, 46, 51, 55, 58]) bx.fillRect(0, y, 8, 1);
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(19, 19, 14, 40, 1, true), Mat.basic(0xffffff, { map: canvasTexture(bc), side: THREE.BackSide, fog: false }));
+  wall.position.y = 6.2;
+  sc.add(wall);
+
+  // light beams sweeping from above
+  const beamMat = Mat.basic(0xffd8f0, { transparent: true, opacity: 0.08, blending: THREE.AdditiveBlending, fog: false, side: THREE.DoubleSide });
+  const beams = [];
+  for (let i = 0; i < 4; i++) {
+    const b = new THREE.Mesh(new THREE.ConeGeometry(1.6, 9, 12, 1, true).translate(0, -4.5, 0), beamMat);
+    b.position.set(-6 + i * 4, 9, -2);
+    sc.add(b); beams.push(b);
+  }
+
+  // pedestal: shared geometry + a neon ring tinted per fighter
+  const pb = new GeoBatch();
+  pb.add(cyl(0.92, 1.02, 0.36, 16), 0x2a2240, { p: [0, 0.18, 0] });
+  pb.add(cyl(0.95, 0.95, 0.04, 16), 0xf2c230, { p: [0, 0.34, 0] });
+  pb.add(cyl(0.86, 0.86, 0.05, 16), 0x4a3a70, { p: [0, 0.385, 0] });
+  const pedGeo = pb.build();
+  const ringGeo = torus(1.0, 0.035, 4, 24).rotateX(Math.PI / 2);
+  const shadowGeo = new THREE.CircleGeometry(0.5, 16).rotateX(-Math.PI / 2);
+  const shadowMat = Mat.basic(0x000000, { transparent: true, opacity: 0.35 });
+  const pedMat = Mat.toon(0xffffff, { vertexColors: true, rim: 0.4 });
+
+  let t = 0;
+  return {
+    scene: sc,
+    TOP: 0.41,
+    /** A pedestal group (shared geometry; safe to drop without disposing). */
+    pedestal(x, z, ringColor) {
+      const gp = new THREE.Group();
+      gp.add(new THREE.Mesh(pedGeo, pedMat));
+      const ring = new THREE.Mesh(ringGeo, Mat.basic(new THREE.Color(ringColor).getHex(), { fog: false }));
+      ring.position.y = 0.2;
+      gp.add(ring);
+      const sh = new THREE.Mesh(shadowGeo, shadowMat); sh.position.y = 0.415; gp.add(sh);
+      gp.position.set(x, 0, z);
+      sc.add(gp);
+      return gp;
+    },
+    update(dt) {
+      t += dt;
+      beams.forEach((b, i) => { b.rotation.z = Math.sin(t * 0.6 + i * 1.7) * 0.35; b.rotation.x = Math.cos(t * 0.5 + i) * 0.2; });
+    },
+  };
+})();
+
 /* =====================================================================================
  * 5. TRUCK — the CYBERCHUNK. Angular body made of subdivided quad panels so hits can
  *    dent them; four damage stages: cracked glass → dents → panels fly off → collapse
@@ -2062,7 +2132,7 @@ class Fighter {
  *    scoring, and the H debug overlay that draws the ranges.
  * ===================================================================================== */
 const Combat = (() => {
-  const stats = { hits: 0, score: 0, damage: 0, lastHitT: 0 };
+  const stats = { hits: 0, score: 0, damage: 0, combo: 0, lastHitT: -9 };
   // Debug overlay: translucent strips on the fight plane (hidden unless H is pressed).
   const dbgMat = (c) => new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.35, depthTest: false, fog: false });
   const strip = (c) => { const m = new THREE.Mesh(box(1, 1, 0.06), dbgMat(c)); m.renderOrder = 50; m.visible = false; scene.add(m); return m; };
@@ -2071,7 +2141,7 @@ const Combat = (() => {
 
   return {
     stats,
-    reset() { stats.hits = stats.score = stats.damage = 0; },
+    reset() { stats.hits = stats.score = stats.damage = stats.combo = 0; stats.lastHitT = -9; },
     /** Is the truck's nose within `reach` of the fighter? (hitbox [x, x+reach] vs hurtbox [front, back]) */
     inRange(f, reach) { return !Truck.destroyed && f.x + reach >= Truck.frontX() - 0.05 && f.x <= Truck.backX(); },
     /** Resolve an attack's active frame. A = { dmg, power, reach, y }. Returns damage dealt. */
@@ -2086,7 +2156,8 @@ const Combat = (() => {
       stats.hits++;
       stats.damage += dealt;
       stats.score += Math.round(dealt * 10);
-      stats.lastHitT = performance.now();
+      stats.combo = Stage.time - stats.lastHitT < 0.9 ? stats.combo + 1 : 1;   // chain hits for the combo counter
+      stats.lastHitT = Stage.time;
       // impact feedback
       _v3.set(Truck.frontX() + 0.05, clamp(p.y, 0.7, 1.6), 0.35);
       FX.burst('chip', _v3, 2 + Math.round(A.power * 2), { dir: _v1.set(-1.5, 1, 0.5) });
@@ -2220,6 +2291,95 @@ const FX = (() => {
 })();
 
 /* =====================================================================================
+ * 9. HUD — everything drawn on the 480x270 overlay canvas: bouncy numbers, plates,
+ *    announcement banners and speech bubbles anchored to 3D positions.
+ * ===================================================================================== */
+const HUD = (() => {
+  const W = CONFIG.LOW_W, H = CONFIG.LOW_H;
+  const pops = new Map();     // key -> { v, t } for the bounce-on-change effect
+  const banners = [];
+  const bubbles = new Map();
+  const _p = new THREE.Vector3();
+
+  /** Word-wrap a string to lines of at most `max` characters. */
+  function wrap(text, max) {
+    const lines = [];
+    let line = '';
+    for (const word of text.split(' ')) {
+      if ((line + ' ' + word).trim().length > max) { if (line) lines.push(line); line = word; }
+      else line = (line + ' ' + word).trim();
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  return {
+    wrap,
+    /** Returns a scale factor that pops whenever `value` changes for this key. */
+    pop(key, value) {
+      let b = pops.get(key);
+      if (!b) { b = { v: value, t: 9 }; pops.set(key, b); }
+      if (b.v !== value) { b.v = value; b.t = 0; }
+      return 1 + 0.55 * Math.max(0, 1 - b.t / 0.22) ** 2;
+    },
+    /** Dark translucent plate with a hard black border. */
+    plate(ctx, x, y, w, h, fill = 'rgba(18,8,36,0.78)', edge = '#000') {
+      ctx.fillStyle = edge; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+      ctx.fillStyle = fill; ctx.fillRect(x, y, w, h);
+    },
+    update(dt) {
+      for (const b of pops.values()) b.t += dt;
+      for (let i = banners.length - 1; i >= 0; i--) { banners[i].t += dt; if (banners[i].t > banners[i].dur) banners.splice(i, 1); }
+      for (const [k, b] of bubbles) { b.t += dt; if (b.t > b.dur) bubbles.delete(k); }
+    },
+    clear() { banners.length = 0; bubbles.clear(); },
+    /** Big centred announcement that slams in, wobbles, and fades. */
+    banner(text, o = {}) {
+      banners.push({ text, t: 0, dur: o.dur ?? 1.5, scale: o.scale ?? 6, color: o.color ?? ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'], y: o.y ?? 100, sub: o.sub, subColor: o.subColor });
+    },
+    /** Speech bubble for `id` that follows anchor() (a world-space point), typed out letter by letter. */
+    say(id, text, anchor, o = {}) { bubbles.set(id, { text, anchor, t: 0, dur: o.dur ?? 2.5, cps: o.cps ?? 28, lines: wrap(text, o.width ?? 22) }); },
+    hush(id) { bubbles.delete(id); },
+    drawBanners(ctx) {
+      for (const b of banners) {
+        const inK = Math.min(1, b.t / 0.16);
+        const pop = b.t < 0.16 ? lerp(2.4, 1, inK) : 1 + Math.sin((b.t - 0.16) * 18) * Math.max(0, 0.1 - (b.t - 0.16) * 0.2);
+        ctx.globalAlpha = clamp((b.dur - b.t) / 0.2, 0, 1);
+        PixelFont.draw(ctx, b.text, W / 2, b.y, { scale: b.scale, align: 'center', color: b.color, outline: 2, pop });
+        if (b.sub) PixelFont.draw(ctx, b.sub, W / 2, b.y + 7 * b.scale + 8, { scale: 2, align: 'center', color: b.subColor ?? '#fff' });
+        ctx.globalAlpha = 1;
+      }
+    },
+    drawBubbles(ctx) {
+      for (const bb of bubbles.values()) {
+        _p.copy(bb.anchor()).project(camera);
+        if (_p.z > 1) continue;
+        const ax = (_p.x * 0.5 + 0.5) * W, ay = (0.5 - _p.y * 0.5) * H;
+        const w = Math.max(...bb.lines.map((l) => l.length)) * 6 + 9, h = bb.lines.length * 9 + 6;
+        const x = Math.round(clamp(ax - w / 2, 3, W - w - 3)), y = Math.round(clamp(ay - h - 9, 3, H - h - 12));
+        const tx = Math.round(clamp(ax, x + 5, x + w - 8));
+        const fade = clamp((bb.dur - bb.t) / 0.15, 0, 1);
+        ctx.globalAlpha = fade;
+        // tail, then body (black border, white fill)
+        ctx.fillStyle = '#000';
+        for (let i = 0; i < 8; i++) ctx.fillRect(tx - 1 + Math.round(i * 0.4), y + h + i, Math.max(1, 6 - i) + 2, 1);
+        ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(x, y, w, h);
+        for (let i = 0; i < 7; i++) ctx.fillRect(tx + Math.round(i * 0.4), y + h + i - 1, Math.max(0, 5 - i), 1);
+        let left = Math.floor(bb.t * bb.cps);
+        bb.lines.forEach((line, i) => {
+          const part = line.slice(0, Math.max(0, left));
+          left -= line.length + 1;
+          if (part) PixelFont.draw(ctx, part, x + 5, y + 4 + i * 9, { color: '#1a1030', outline: 0 });
+        });
+        ctx.globalAlpha = 1;
+      }
+    },
+  };
+})();
+
+/* =====================================================================================
  * 11. STATES — title → select → vs → fight → results, plus the fixed-timestep main loop.
  * ===================================================================================== */
 const Game = {
@@ -2228,16 +2388,26 @@ const Game = {
   stateTime: 0,          // sim seconds spent in the current state
   timeScale: 1,          // slow-mo multiplier for the simulation
   fighterIndex: 0,
+  fighter: null,         // the gameplay Fighter during a round
   lastResult: null,
+  best: 0,               // best total score this session
+  view: 'harbor',        // which scene is rendered: 'harbor' | 'showroom'
+  bot: false,            // debug autoplay (smoke test)
 };
 
+const ease = (x) => x * x * (3 - 2 * x);
+const headAnchor = (rig, up = 0.95) => () => rig.j.head.getWorldPosition(_v3).add(_v1.set(0, up, 0));
+const SALES_PITCH = ["SHE'S BULLETPROOF! ...MOSTLY.", 'ARMORED GLASS! UNBREAKABLE!*', 'ZERO TO SIXTY IN... EVENTUALLY.', 'STEP RIGHT UP! THE CYBERCHUNK!', 'ONLY DRIVEN ONCE! INTO A WALL!'];
+const CONDITION = ['SHOWROOM NEW', 'CRACKED GLASS', 'DENTED', 'FALLING APART', 'SCRAP METAL'];
+const CONDITION_COL = ['#7dff9a', '#c8f060', '#ffd23a', '#ff8a3a', '#ff3a4a'];
+
 /**
- * Each state: enter(prev), exit(), update(dt) at a fixed rate, frame(realDt) once per
+ * Each state: enter(prev), exit(next), update(dt) at a fixed rate, frame(realDt) once per
  * rendered frame (camera, cosmetic animation), hud(ctx) to draw the overlay.
  */
 const States = {
   title: {
-    enter() { Game.stateTime = 0; },
+    enter() { Game.view = 'harbor'; Truck.reset(); Salesman.reset(); },
     update() { if (Input.wasPressed('confirm')) setState('select'); },
     frame() {
       // slow cinematic sweep across the harbor
@@ -2245,12 +2415,19 @@ const States = {
       CamRig.to(2 + Math.sin(a) * 19, 4.2 + Math.sin(Stage.time * 0.2) * 0.8, Math.cos(a) * 19, 2, 2.2, -2, true);
     },
     hud(ctx) {
-      PixelFont.draw(ctx, 'CYBER SMASH', 240, 80, { scale: 5, align: 'center', color: ['#fff36b', '#ff9a3c', '#ff3c6e'], outline: 2 });
-      if (Math.floor(Game.stateTime * 2) % 2 === 0) PixelFont.draw(ctx, 'PRESS ENTER', 240, 190, { scale: 2, align: 'center' });
+      const t = Game.stateTime;
+      const drop = Math.max(0, 1 - t * 2.5);
+      PixelFont.draw(ctx, 'CYBER', 240, 34 - drop * 80, { scale: 8, align: 'center', color: ['#ffffff', '#c8d4ff', '#8a9ad8', '#5a6ab0'], outline: 3 });
+      PixelFont.draw(ctx, 'SMASH', 240, 94 + drop * 80, { scale: 8, align: 'center', color: ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'], outline: 3, pop: 1 + Math.sin(t * 3) * 0.02 });
+      PixelFont.draw(ctx, 'THE BONUS STAGE OF THE CENTURY', 240, 160, { align: 'center', color: '#ffd8f0' });
+      if (Math.floor(t * 2.5) % 2 === 0) PixelFont.draw(ctx, 'PRESS ENTER', 240, 186, { scale: 2, align: 'center' });
+      PixelFont.draw(ctx, 'ARROWS/AD MOVE  J PUNCH  K KICK  L SPECIAL  M MUTE', 240, 236, { align: 'center', color: '#c8b8ff' });
+      PixelFont.draw(ctx, '(C) 199X NOT-A-REAL-CORP. NO CYBERCHUNKS WERE HARMED... MUCH.', 240, 254, { align: 'center', color: '#8a7ab8', outline: 0 });
     },
   },
+
   select: {
-    enter() { Game.fighter?.dispose(); Game.fighter = null; },
+    enter() { Game.view = 'harbor'; Game.fighter?.dispose(); Game.fighter = null; },
     update() {
       if (Input.wasPressed('left')) Game.fighterIndex = (Game.fighterIndex + FIGHTERS.length - 1) % FIGHTERS.length;
       if (Input.wasPressed('right')) Game.fighterIndex = (Game.fighterIndex + 1) % FIGHTERS.length;
@@ -2265,8 +2442,9 @@ const States = {
       });
     },
   },
+
   vs: {
-    enter() { Game.stateTime = 0; },
+    enter() { Game.view = 'harbor'; },
     update() { if (Game.stateTime > 2.5 || Input.wasPressed('confirm')) setState('fight'); },
     frame() {
       const a = -0.6 + Game.stateTime * 0.25;
@@ -2278,71 +2456,235 @@ const States = {
       PixelFont.draw(ctx, 'THE CYBERCHUNK', 240, 190, { scale: 3, align: 'center' });
     },
   },
+
+  /* ---------- The round: intro → announce → play → end ---------- */
   fight: {
-    enter() {
-      this.timer = CONFIG.FIGHT_TIME; this.phase = 'play'; this.endT = 0; this.win = false;
-      Truck.reset(); FX.clear(); Combat.reset(); Salesman.reset(); Stage.Crowd.calm();
+    INTRO: 4.8,
+    enter(prev) {
+      Game.view = 'harbor';
+      this.timer = CONFIG.FIGHT_TIME; this.win = false; this.bonus = 0; this.events = new Set();
+      Truck.reset(); FX.clear(); Combat.reset(); Salesman.reset(); Stage.Crowd.calm(); HUD.clear();
       Game.fighter?.dispose();
       Game.fighter = new Fighter(Game.fighterIndex);
       CamRig.speed = 3;
-      CamRig.to(-1, 2.3, 14.5, -1, 1.6, 0, true);
+      // retrying skips the cinematic intro
+      if (prev === 'results') this.setPhase('announce');
+      else {
+        this.setPhase('intro');
+        Game.fighter.setMode('stand');
+        Salesman.react('pitch', 99);
+        const pool = [...SALES_PITCH].sort(() => Math.random() - 0.5);
+        this.pitch = [pool[0], pool[1], "CAN'T SELL IT... WRECK IT IN 40 SECONDS AND I'LL PAY YOU!"];
+        // camera path: close on the salesman, dolly, swoop over the truck, settle on the side view
+        this.path = new THREE.CatmullRomCurve3([
+          new THREE.Vector3(9.8, 2.3, 5.2), new THREE.Vector3(8.6, 2.0, 7.4), new THREE.Vector3(3.5, 4.6, 11.5), new THREE.Vector3(-1.2, 2.3, 14.5),
+        ]);
+      }
     },
-    exit() { Combat.hideDebug(); },
+    exit() { Combat.hideDebug(); Game.timeScale = 1; HUD.clear(); },
+    setPhase(p) { this.phase = p; this.phaseT = 0; this.events = new Set(); },
+    /** Fire `fn` once when the phase clock passes `t`. */
+    at(t, key, fn) { if (this.phaseT >= t && !this.events.has(key)) { this.events.add(key); fn(); } },
     update(dt) {
       const f = Game.fighter;
+      this.phaseT += dt;
       if (Input.wasPressed('debug')) Combat.toggleDebug();
-      if (this.phase === 'play') {
+      if (this.phase === 'intro') {
+        f.update(dt, false);
+        const sAnchor = headAnchor(Salesman.rig, 1.0);
+        this.pitch.forEach((line, i) => this.at(0.2 + i * 1.55, 'pitch' + i, () => HUD.say('salesman', line, sAnchor, { dur: i === 2 ? 2.0 : 1.45, cps: 40 })));
+        if (this.phaseT > this.INTRO || Input.wasPressed('confirm')) this.setPhase('announce');
+      } else if (this.phase === 'announce') {
+        this.at(0, 'start', () => {
+          HUD.hush('salesman');
+          Salesman.react('idle', 0);
+          f.setMode('idle');
+          HUD.banner('SALE 1...', { dur: 1.15, scale: 6, y: 92 });
+        });
+        this.at(1.25, 'haggle', () => HUD.banner('HAGGLE!', { dur: 0.9, scale: 8, y: 86, color: ['#ffffff', '#ffd23a', '#ff6a2a', '#ff2a4a'] }));
+        f.update(dt, false);
+        if (this.phaseT > 2.05) this.setPhase('play');
+      } else if (this.phase === 'play') {
+        if (Game.bot) this.botInput(f);
         this.timer = Math.max(0, this.timer - dt);
         f.update(dt, true);
         if (Truck.destroyed) this.end(true);
         else if (this.timer <= 0) this.end(false);
-      } else {
+      } else if (this.phase === 'end') {
         f.update(dt, false);
-        this.endT += dt;
-        if (this.endT > 3.5) this.finish();
+        this.endSequence();
       }
       Combat.updateDebug(f);
     },
     /** The round is decided: truck wrecked (win) or time up (lose). */
     end(win) {
-      this.phase = 'end'; this.win = win; this.endT = 0;
+      this.win = win;
+      this.setPhase('end');
       Game.fighter.setMode(win ? 'victory' : 'defeat');
       Salesman.react(win ? 'faint' : 'celebrate');
-      Stage.Crowd.excite(win ? 1 : 0.3);
+      Stage.Crowd.excite(win ? 1 : 0.35);
+      if (win) {
+        this.bonus = Math.ceil(this.timer) * 1000;
+        HUD.banner('PERFECT!', { dur: 3.2, scale: 8, y: 56 });
+      } else {
+        HUD.banner('TIME UP!', { dur: 1.0, scale: 6, y: 80 });
+      }
+    },
+    endSequence() {
+      const def = FIGHTERS[Game.fighterIndex];
+      const fAnchor = headAnchor(Game.fighter.rig, 0.95);
+      if (this.win) {
+        this.at(1.3, 'line', () => HUD.say('fighter', def.win, fAnchor, { dur: 3.4 }));
+      } else {
+        this.at(1.0, 'cancel', () => {
+          HUD.banner('SALE CANCELLED', { dur: 3.8, scale: 5, y: 196, color: ['#ffd0e0', '#ff6a8a', '#c02a5a', '#7a1a4a'] });
+          HUD.say('salesman', 'HA! STILL FOR SALE! ANY TAKERS?', headAnchor(Salesman.rig, 1.0), { dur: 2.2 });
+        });
+        this.at(2.4, 'line', () => HUD.say('fighter', def.lose, fAnchor, { dur: 2.8 }));
+      }
+      if (this.phaseT > 5.4 || (this.phaseT > 1.5 && Input.wasPressed('confirm'))) this.finish();
     },
     finish() {
-      Game.lastResult = { win: this.win, timeLeft: this.timer, hits: Combat.stats.hits, score: Combat.stats.score };
+      const score = Combat.stats.score;
+      Game.lastResult = { win: this.win, timeLeft: this.timer, hits: Combat.stats.hits, score, bonus: this.bonus, total: score + this.bonus };
       setState('results');
     },
+    /** Debug autoplay: walk into range, alternate punches and kicks. */
+    botInput(f) {
+      const inRange = Combat.inRange(f, CONFIG.PUNCH.reach - 0.15);
+      if (inRange) Input.virtual.delete('right'); else Input.virtual.add('right');
+      if (inRange && f.mode === 'idle') Input.press(Math.random() < 0.5 ? 'punch' : 'kick');
+    },
     frame() {
-      // gently track the midpoint between the fighter and the truck
-      const fx = Game.fighter ? Game.fighter.x : 0;
+      const f = Game.fighter;
+      const fx = f ? f.x : 0;
       const tx = Truck.destroyed ? Truck.root.position.x : Truck.frontX();
       const cx = clamp((fx + tx) / 2 + 0.4, -4.5, 3);
-      CamRig.to(cx, 2.3, 14.5, cx, 1.6, 0);
+      if (this.phase === 'intro') {
+        // cinematic swoop along the spline, look-at blending from the salesman to the fight
+        const u = ease(clamp(this.phaseT / this.INTRO, 0, 1));
+        const p = this.path.getPoint(u);
+        const lk = _v2.set(7.2, 1.5, -1.1).lerp(_v3.set(cx, 1.6, 0), ease(clamp((u - 0.35) / 0.65, 0, 1)));
+        CamRig.to(p.x, p.y, p.z, lk.x, lk.y, lk.z, true);
+      } else if (this.phase === 'end') {
+        // win: push in on the fighter by the wreck; lose: frame the fighter AND the gloating salesman
+        const k = ease(clamp(this.phaseT / 1.2, 0, 1));
+        const ex = this.win ? fx + 2.4 : (fx + Salesman.rig.root.position.x) / 2;
+        CamRig.to(lerp(cx, ex, k), lerp(2.3, 2.0, k), lerp(14.5, this.win ? 9.5 : 15.5, k), lerp(cx, ex, k), lerp(1.6, 1.25, k), 0);
+      } else {
+        CamRig.to(cx, 2.3, 14.5, cx, 1.6, 0);
+      }
     },
     hud(ctx) {
-      PixelFont.draw(ctx, String(Math.ceil(this.timer)), 240, 10, { scale: 4, align: 'center' });
-      PixelFont.draw(ctx, 'CYBERCHUNK', 470, 8, { align: 'right', color: '#fff36b' });
-      drawBar(ctx, 270, 18, 200, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
-      PixelFont.draw(ctx, FIGHTERS[Game.fighterIndex].name, 10, 8, { color: FIGHTERS[Game.fighterIndex].color });
-      PixelFont.draw(ctx, String(Combat.stats.score).padStart(7, '0'), 10, 20, { scale: 2 });
-      if (this.phase === 'end') PixelFont.draw(ctx, this.win ? 'WRECKED!' : 'TIME UP!', 240, 110, { scale: 5, align: 'center', color: ['#fff36b', '#ff3c6e'], outline: 2 });
+      const def = FIGHTERS[Game.fighterIndex];
+      if (this.phase !== 'intro') {
+        // --- left: player name + score ---
+        HUD.plate(ctx, 5, 4, 132, 32);
+        PixelFont.draw(ctx, '1P', 9, 8, { color: '#ffd23a' });
+        PixelFont.draw(ctx, def.name, 25, 8, { color: def.color });
+        const sc = Combat.stats.score + (this.phase === 'end' && this.win ? Math.round(this.bonus * clamp((this.phaseT - 0.8) / 1.2, 0, 1)) : 0);
+        PixelFont.draw(ctx, String(sc).padStart(7, '0'), 9, 19, { scale: 2, pop: HUD.pop('score', Combat.stats.score) });
+        // --- centre: the big countdown ---
+        const secs = Math.ceil(this.timer);
+        const low = secs <= 10 && this.phase === 'play';
+        HUD.plate(ctx, 214, 3, 52, 38);
+        const shake = secs <= 5 && this.phase === 'play' ? Math.round(Math.sin(Stage.time * 50)) : 0;
+        PixelFont.draw(ctx, String(secs).padStart(2, '0'), 240 + shake, 9, {
+          scale: 4, align: 'center', outline: 2, pop: HUD.pop('timer', secs),
+          color: low ? ['#ffffff', '#ff8a8a', '#ff2a3a'] : ['#ffffff', '#fff6c0', '#ffd23a'],
+        });
+        PixelFont.draw(ctx, 'TIME', 240, 44, { align: 'center', color: '#c8b8ff' });
+        // --- right: the truck's health ---
+        HUD.plate(ctx, 266, 4, 210, 40);
+        PixelFont.draw(ctx, 'CYBERCHUNK', 470, 8, { align: 'right', color: '#fff36b' });
+        drawBar(ctx, 271, 18, 199, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
+        PixelFont.draw(ctx, CONDITION[Truck.stage], 470, 33, { align: 'right', color: CONDITION_COL[Truck.stage], outline: 1, pop: HUD.pop('cond', Truck.stage) });
+        // --- combo counter ---
+        const sinceHit = Stage.time - Combat.stats.lastHitT;
+        if (Combat.stats.combo >= 2 && sinceHit < 1.1) {
+          ctx.globalAlpha = clamp((1.1 - sinceHit) / 0.3, 0, 1);
+          PixelFont.draw(ctx, `${Combat.stats.combo} HITS!`, 10, 52, { scale: 2, color: ['#ffffff', '#ffd23a', '#ff6a2a'], pop: HUD.pop('combo', Combat.stats.combo) });
+          ctx.globalAlpha = 1;
+        }
+        // --- bottom ---
+        PixelFont.draw(ctx, `BEST ${String(Game.best).padStart(7, '0')}`, 474, 260, { align: 'right', color: '#c8b8ff' });
+        if (this.phase === 'play' && this.phaseT < 6) PixelFont.draw(ctx, 'J PUNCH   K KICK   L SPECIAL', 240, 258, { align: 'center', color: '#ffffff' });
+        // --- time bonus tally ---
+        if (this.phase === 'end' && this.win && this.phaseT > 0.6) {
+          const k = clamp((this.phaseT - 0.8) / 1.2, 0, 1);
+          PixelFont.draw(ctx, `TIME BONUS  ${Math.ceil(this.timer)} X 1000`, 240, 124, { scale: 2, align: 'center', color: '#ffffff' });
+          PixelFont.draw(ctx, String(Math.round(this.bonus * k)), 240, 144, { scale: 3, align: 'center', color: ['#ffffff', '#ffd23a'], pop: HUD.pop('bonus', Math.round(k * 10)) });
+        }
+      } else {
+        PixelFont.draw(ctx, 'ENTER TO SKIP', 474, 260, { align: 'right', color: '#c8b8ff' });
+      }
+      HUD.drawBubbles(ctx);
+      HUD.drawBanners(ctx);
     },
   },
+
+  /* ---------- Results: fighter on a rotating pedestal, stats, best score, retry ---------- */
   results: {
-    enter() { Game.stateTime = 0; this.choice = 0; },
-    update() {
-      if (Input.wasPressed('up') || Input.wasPressed('down')) this.choice ^= 1;
-      if (Input.wasPressed('confirm')) setState(this.choice === 0 ? 'vs' : 'select');
+    enter() {
+      Game.view = 'showroom';
+      const r = Game.lastResult || { win: false, score: 0, hits: 0, timeLeft: 0, bonus: 0, total: 0 };
+      this.r = r;
+      this.newBest = r.total > Game.best;
+      Game.best = Math.max(Game.best, r.total);
+      this.choice = 0;
+      const def = FIGHTERS[Game.fighterIndex];
+      this.ped = Showroom.pedestal(1.35, 0, def.color);
+      this.model = FighterKit.build(def.id);
+      this.model.id = def.id;
+      this.model.rig.root.position.set(1.35, Showroom.TOP, 0);
+      Showroom.scene.add(this.model.rig.root);
+      HUD.clear();
+      HUD.say('line', r.win ? def.win : def.lose, () => _v3.set(2.6, 2.05, 0), { dur: 1e9, width: 18 });
     },
-    frame() { CamRig.to(4.5, 2.4, 9, 6.5, 1.3, -1, true); },
+    exit() {
+      this.model.rig.dispose();
+      this.ped.removeFromParent();
+      HUD.clear();
+    },
+    update(dt) {
+      // the pedestal turns slowly, showing off the pose
+      this.ped.rotation.y = this.model.rig.root.rotation.y = Game.stateTime * 0.6 - 0.4;
+      FighterKit.animate(this.model, this.r.win ? 'victory' : 'defeat', Game.stateTime, dt);
+      if (Input.wasPressed('up') || Input.wasPressed('down')) this.choice ^= 1;
+      if (Game.stateTime > 0.6 && Input.wasPressed('confirm')) setState(this.choice === 0 ? 'fight' : 'select');
+      if (Input.wasPressed('back')) setState('select');
+    },
+    frame() { CamRig.to(0.3, 1.75, 7.6, 0.75, 1.15, 0, true); },
     hud(ctx) {
-      const r = Game.lastResult || { win: false, score: 0, hits: 0, timeLeft: 0 };
-      PixelFont.draw(ctx, r.win ? 'PERFECT!' : 'SALE CANCELLED', 240, 30, { scale: 4, align: 'center', color: ['#fff36b', '#ff3c6e'] });
-      PixelFont.draw(ctx, `SCORE ${r.score}   HITS ${r.hits}   TIME ${Math.ceil(r.timeLeft)}`, 240, 80, { scale: 1, align: 'center' });
-      PixelFont.draw(ctx, 'RETRY', 240, 170, { scale: 2, align: 'center', color: this.choice === 0 ? '#ff3c6e' : '#fff' });
-      PixelFont.draw(ctx, 'CHANGE FIGHTER', 240, 194, { scale: 2, align: 'center', color: this.choice === 1 ? '#ff3c6e' : '#fff' });
+      const r = this.r, t = Game.stateTime;
+      const def = FIGHTERS[Game.fighterIndex];
+      PixelFont.draw(ctx, r.win ? 'PERFECT!' : 'SALE CANCELLED', 240, 10, {
+        scale: r.win ? 6 : 4, align: 'center', outline: 2,
+        color: r.win ? ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'] : ['#ffd0e0', '#ff6a8a', '#c02a5a', '#7a1a4a'],
+      });
+      HUD.plate(ctx, 10, 58, 222, 168);
+      PixelFont.draw(ctx, def.name, 121, 64, { align: 'center', color: def.color });
+      const k = (d) => clamp((t - d) / 0.8, 0, 1);
+      const row = (label, value, y, d, big) => {
+        PixelFont.draw(ctx, label, 18, y, { color: '#c8b8ff' });
+        PixelFont.draw(ctx, value(k(d)), 224, y - (big ? 4 : 0), { align: 'right', scale: big ? 2 : 1, color: big ? ['#ffffff', '#ffd23a'] : '#ffffff' });
+      };
+      row('SCORE', (q) => String(Math.round(r.score * q)), 84, 0.2);
+      row('TIME REMAINING', (q) => `${(r.timeLeft * q).toFixed(1)}S`, 98, 0.4);
+      row('HITS LANDED', (q) => String(Math.round(r.hits * q)), 112, 0.6);
+      row('TIME BONUS', (q) => (r.win ? String(Math.round(r.bonus * q)) : 'NONE'), 126, 0.8);
+      ctx.fillStyle = '#5a4a8a'; ctx.fillRect(18, 140, 206, 1);
+      row('TOTAL', (q) => String(Math.round(r.total * q)), 150, 1.0, true);
+      PixelFont.draw(ctx, 'SESSION BEST', 18, 170, { color: '#c8b8ff' });
+      PixelFont.draw(ctx, String(Game.best), 224, 170, { align: 'right', color: '#ffffff' });
+      if (this.newBest && t > 1.8 && Math.floor(t * 3) % 2 === 0) PixelFont.draw(ctx, 'NEW RECORD!', 121, 182, { align: 'center', color: ['#ffffff', '#7dff9a'] });
+      const opt = (label, i, y) => {
+        const on = this.choice === i;
+        PixelFont.draw(ctx, (on ? '> ' : '  ') + label, 30, y, { scale: 2, color: on ? ['#ffffff', '#ffd23a'] : '#8a7ab8', pop: on ? 1 + Math.sin(t * 8) * 0.03 : 1 });
+      };
+      opt('RETRY', 0, 196);
+      opt('CHANGE FIGHTER', 1, 211);
+      HUD.drawBubbles(ctx);
     },
   },
 };
@@ -2365,6 +2707,7 @@ const perf = { fps: 60, frames: 0, acc: 0 };
 function simulate(dt) {
   Game.stateTime += dt;
   Stage.update(dt);
+  Showroom.update(dt);
   for (const m of Game.lineup || []) FighterKit.animate(m, Game.lineupMode, Stage.time, dt);
   Truck.update(dt);
   FX.update(dt);
@@ -2381,6 +2724,7 @@ function frame(now) {
     simulate(SIM_DT * Game.timeScale);
     accumulator -= SIM_DT;
   }
+  HUD.update(realDt);
   Game.state.frame?.(realDt);
   if (Game.camOverride) CamRig.to(...Game.camOverride, true);
   CamRig.update(realDt);
@@ -2388,7 +2732,7 @@ function frame(now) {
   Shadows.update();
 
   renderer.info.reset();
-  renderPipeline(scene, camera);
+  renderPipeline(Game.view === 'showroom' ? Showroom.scene : scene, camera);
 
   hud.clearRect(0, 0, CONFIG.LOW_W, CONFIG.LOW_H);
   Game.state.hud?.(hud);
@@ -2397,7 +2741,7 @@ function frame(now) {
   if (perf.acc >= 0.5) { perf.fps = perf.frames / perf.acc; perf.frames = 0; perf.acc = 0; }
 }
 
-/* ---------- Test / debug hook (read-only peeks plus a fast-forward for the smoke test) ---------- */
+/* ---------- Test / debug hook (read-only peeks plus a few levers for the smoke test) ---------- */
 window.CS = {
   ready: false,
   get state() { return Game.stateName; },
@@ -2405,11 +2749,16 @@ window.CS = {
     state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
     truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
     fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, phase: States.fight.phase,
-    hits: Combat.stats.hits, score: Combat.stats.score,
+    timer: +(States.fight.timer ?? 0).toFixed(2), hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best,
+    result: Game.lastResult,
   }),
   debug: {
     endFight: () => Game.stateName === 'fight' && States.fight.finish(),
     hitTruck: (dmg = 30, power = 1) => Truck.hit({ dmg, power, y: 1.1 }),
+    /** Let the in-page bot play (walks in, alternates punches and kicks). */
+    bot: (on = true) => { Game.bot = on; if (!on) Input.virtual.clear(); },
+    /** Set the clock (e.g. to test the time-out path quickly). */
+    setTimer: (t) => { States.fight.timer = t; },
     /** Show every fighter side by side in a pose (for eyeballing the models). */
     lineup(mode = 'stand') {
       for (const m of Game.lineup || []) m.rig.dispose();
