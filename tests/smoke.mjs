@@ -194,7 +194,15 @@ async function main() {
     await sleep(500);
     await shot('announce');
     await page.evaluate(() => CS.debug.bot(true));
-    await waitFor(() => CS.info().phase === 'end', 90000, 'bot to wreck the truck');
+    await page.waitForFunction(() => { const i = CS.info(); if (i.phase === 'play' && i.hits >= 6) { CS.debug.pause(true); return true; } return false; }, null, { timeout: 60000, polling: 16 });
+    await sleep(150);
+    await shot('juice-midfight');
+    await page.evaluate(() => CS.debug.pause(false));
+    await page.waitForFunction(() => { const i = CS.info(); if (i.phase === 'finisher' && i.phaseT > 0.12) { CS.debug.pause(true); return true; } return i.phase === 'end'; }, null, { timeout: 90000, polling: 16 });
+    await sleep(150);
+    await shot('finisher');
+    await page.evaluate(() => CS.debug.pause(false));
+    await waitFor(() => CS.info().phase === 'end', 30000, 'bot to wreck the truck');
     await sleep(1600);
     await shot('perfect');
     await page.evaluate(() => CS.debug.bot(false));
