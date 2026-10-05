@@ -39,6 +39,8 @@ const CONFIG = {
   MAX_FRAME_DT: 0.1,       // clamp huge frame gaps (tab switch)
   FIGHT_TIME: 40,          // seconds on the clock
   CAMERA_FOV: 28,
+  TRUCK_HP: 1000,
+  DENT_FROM: 0.85,         // health fraction below which hits dent the body
 };
 
 const FIGHTERS = [
@@ -210,6 +212,28 @@ const PixelFont = {
     return w;
   },
 };
+
+/**
+ * Chunky arcade health bar: black frame, red "recent damage" lag, yellow fill, tick marks.
+ * `reverse` drains toward the right edge (for a bar on the right side of the screen).
+ */
+function drawBar(ctx, x, y, w, h, frac, lag, reverse = false) {
+  frac = clamp(frac, 0, 1); lag = clamp(lag, frac, 1);
+  ctx.fillStyle = '#000'; ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+  ctx.fillStyle = '#3a1230'; ctx.fillRect(x, y, w, h);
+  const seg = (f0, f1, col) => {
+    const a = Math.round(w * f0), b = Math.round(w * f1);
+    ctx.fillStyle = col;
+    if (reverse) ctx.fillRect(x + w - b, y, b - a, h); else ctx.fillRect(x + a, y, b - a, h);
+  };
+  seg(frac, lag, '#ff2a4a');
+  seg(0, frac, '#ffd23a');
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  const fw = Math.round(w * frac);
+  ctx.fillRect(reverse ? x + w - fw : x, y + 1, fw, 2);          // glossy highlight
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  for (let i = 1; i < 10; i++) ctx.fillRect(x + Math.round((w * i) / 10), y, 1, h); // ticks
+}
 
 /* ---------- Canvas textures (every texture in the game is drawn at runtime) ---------- */
 function makeCanvas(w, h) {
@@ -1157,11 +1181,515 @@ const Salesman = (() => {
 })();
 Stage.salesman = Salesman;
 
-// Placeholder truck until the Cyberchunk model lands.
-const placeholder = new THREE.Mesh(box(5, 1.6, 2), Mat.toon(0xb8bcc4));
-placeholder.position.set(2, 0.8, 0);
-scene.add(placeholder);
-Shadows.track(placeholder, 6, 2.6);
+/* =====================================================================================
+ * 5. TRUCK — the CYBERCHUNK. Angular body made of subdivided quad panels so hits can
+ *    dent them; four damage stages: cracked glass → dents → panels fly off → collapse
+ *    into a pile with a smoking battery. Rocks on its suspension and slides on hits.
+ * ===================================================================================== */
+const Truck = (() => {
+  // Profile (truck-local, nose at -X): a flat nose rising in one straight line to the apex,
+  // then one straight line down to the tail. Belt line at 1.45, side glass above it.
+  const L = 2.7, H = 1.1, BOT = 0.62, NOSE_Y = 1.05, APEX = 2.05, TAIL_Y = 1.45, BELT = 1.45, INSET = 0.22;
+  const START_X = 2.1, MAX_X = 3.9, YAW = 0.22;
+  const MAX_HP = CONFIG.TRUCK_HP;
+  const topY = (x) => (x <= 0 ? NOSE_Y + ((x + L) * (APEX - NOSE_Y)) / L : APEX - (x * (APEX - TAIL_Y)) / L);
+  const sideZ = (y) => H - INSET * clamp((y - BELT) / (APEX - BELT), 0, 1);
+
+  /* ---------- runtime textures for the "armored" glass ---------- */
+  function glassTexture(cracked) {
+    const [c, x] = makeCanvas(64, 48);
+    const g = x.createLinearGradient(0, 0, 0, 48);
+    g.addColorStop(0, '#3a4a6c'); g.addColorStop(1, '#0c1020');
+    x.fillStyle = g; x.fillRect(0, 0, 64, 48);
+    x.fillStyle = 'rgba(255,255,255,0.18)';
+    for (let i = 0; i < 48; i++) { x.fillRect(10 + i * 0.6, 47 - i, 5, 1); x.fillRect(30 + i * 0.6, 47 - i, 2, 1); }
+    if (cracked) {
+      // two spiderweb impacts drawn pixel by pixel (no anti-aliasing)
+      const plot = (px, py, col) => { x.fillStyle = col; x.fillRect(px | 0, py | 0, 1, 1); };
+      for (const [cx, cy] of [[20, 22], [46, 30]]) {
+        const spokes = 9;
+        for (let s = 0; s < spokes; s++) {
+          let a = (s / spokes) * Math.PI * 2 + rand(-0.2, 0.2), px = cx, py = cy;
+          for (let k = 0; k < 40; k++) { a += rand(-0.25, 0.25); px += Math.cos(a); py += Math.sin(a); plot(px, py, k < 6 ? '#ffffff' : '#cfe8ff'); }
+        }
+        for (const r of [5, 10, 16]) for (let a = 0; a < Math.PI * 2; a += 0.08) if (Math.random() < 0.7) plot(cx + Math.cos(a) * r * rand(0.9, 1.1), cy + Math.sin(a) * r * rand(0.9, 1.1), '#bcd8f0');
+        x.fillStyle = '#ffffff'; x.fillRect(cx - 2, cy - 2, 4, 4);
+      }
+    }
+    return canvasTexture(c);
+  }
+  const glassClean = glassTexture(false), glassCracked = glassTexture(true);
+
+  /* ---------- materials (unique: they flash and swap maps) ---------- */
+  const steel = Mat.toon(0xa9b1bf, { vertexColors: true, unique: true, rim: 0.55, side: THREE.DoubleSide });
+  const glass = Mat.toon(0xffffff, { vertexColors: true, unique: true, rim: 0.7, side: THREE.DoubleSide, map: glassClean });
+  const darkMat = Mat.toon(0xffffff, { vertexColors: true, unique: true, rim: 0.3 });
+  const lightsMat = Mat.basic(0xffffff, { vertexColors: true, unique: true });
+  const flashMats = [steel, glass, darkMat];
+
+  const root = new THREE.Group();      // world placement (slides on knockback)
+  root.position.set(START_X, 0, 0);
+  root.rotation.y = YAW;               // nose turned slightly toward the camera
+  const body = new THREE.Group();      // suspension pivot (rocks on hits)
+  root.add(body);
+  scene.add(root);
+
+  /** Subdivided bilinear quad between four corners (c00→c10 is "u", c00→c01 is "v"). */
+  function quadGeo(c00, c10, c11, c01, su, sv) {
+    const pos = [], uv = [], idx = [];
+    for (let j = 0; j <= sv; j++) for (let i = 0; i <= su; i++) {
+      const u = i / su, v = j / sv;
+      _v1.copy(c00).lerp(c10, u); _v2.copy(c01).lerp(c11, u); _v1.lerp(_v2, v);
+      pos.push(_v1.x, _v1.y, _v1.z); uv.push(u, v);
+    }
+    for (let j = 0; j < sv; j++) for (let i = 0; i < su; i++) {
+      const a = j * (su + 1) + i, b = a + 1, c = a + su + 1, d = c + 1;
+      idx.push(a, b, d, a, d, c);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    return g;
+  }
+
+  const panels = [];
+  /**
+   * Add a body panel. Geometry is re-centred on its own origin so detached panels tumble
+   * around their middle. opts.detach = health fraction at which it flies off.
+   */
+  function panel(name, corners, su, sv, mat, opts = {}) {
+    const [c00, c10, c11, c01] = corners.map((c) => new THREE.Vector3(c[0], c[1], c[2]));
+    const geo = quadGeo(c00, c10, c11, c01, su, sv);
+    geo.computeBoundingBox();
+    const center = geo.boundingBox.getCenter(new THREE.Vector3());
+    geo.translate(-center.x, -center.y, -center.z);
+    geo.computeVertexNormals();
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 3).fill(1), 3));
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(center);
+    body.add(mesh);
+    const normal = new THREE.Vector3().subVectors(c10, c00).cross(new THREE.Vector3().subVectors(c01, c00)).normalize();
+    const p = {
+      name, mesh, normal, home: center.clone(), glass: !!opts.glass, side: opts.side || 0, detachAt: opts.detach || 0,
+      base: geo.attributes.position.array.slice(), dent: new Float32Array(geo.attributes.position.count), loose: false,
+    };
+    panels.push(p);
+    return p;
+  }
+
+  // ---- sides (s = +1 near the camera, -1 far) ----
+  for (const s of [1, -1]) {
+    const z = s * H, zi = s * (H - INSET);
+    // corners ordered so the face normal points outward on both sides
+    const sq = (x0, x1, yb, yt0, yt1, zb = z, zt0 = z, zt1 = z) => (s > 0
+      ? [[x0, yb, zb], [x1, yb, zb], [x1, yt1, zt1], [x0, yt0, zt0]]
+      : [[x1, yb, zb], [x0, yb, zb], [x0, yt0, zt0], [x1, yt1, zt1]]);
+    const wq = (x0, x1, yb, yt0, yt1) => {
+      const off = s * 0.015;
+      return sq(x0, x1, yb, yt0, yt1, s * sideZ(yb) + off, s * sideZ(yt0) + off, s * sideZ(yt1) + off);
+    };
+    panel('fender' + s, sq(-L, -1.6, BOT, topY(-L), topY(-1.6)), 4, 3, steel, { side: s });
+    panel('doorF' + s, sq(-1.6, 0, BOT, BELT, BELT), 5, 3, steel, { side: s, detach: s > 0 ? 0.52 : 0.24 });
+    panel('doorR' + s, sq(0, 1.45, BOT, BELT, BELT), 5, 3, steel, { side: s, detach: s > 0 ? 0.42 : 0.16 });
+    panel('bed' + s, sq(1.45, L, BOT, BELT, BELT), 4, 3, steel, { side: s });
+    panel('cabin' + s, s > 0
+      ? [[-1.6, BELT, z], [L, BELT, z], [0, APEX, zi], [0, APEX, zi]]
+      : [[L, BELT, z], [-1.6, BELT, z], [0, APEX, zi], [0, APEX, zi]], 8, 3, steel, { side: s });
+    panel('winF' + s, wq(-1.25, -0.12, 1.5, topY(-1.25) - 0.05, topY(-0.12) - 0.07), 3, 2, glass, { side: s, glass: true });
+    panel('winR' + s, wq(0.12, 1.35, 1.5, topY(0.12) - 0.07, topY(1.35) - 0.06), 3, 2, glass, { side: s, glass: true });
+  }
+  // ---- top surfaces and ends ----
+  const zr = sideZ(topY(1.45));
+  panel('hood', [[-L, NOSE_Y, H], [-1.6, topY(-1.6), H], [-1.6, topY(-1.6), -H], [-L, NOSE_Y, -H]], 4, 4, steel, { detach: 0.62 });
+  panel('windshield', [[-1.6, topY(-1.6), H], [0, APEX, H - INSET], [0, APEX, -(H - INSET)], [-1.6, topY(-1.6), -H]], 3, 3, glass, { glass: true, detach: 0.08 });
+  panel('roof', [[0, APEX, H - INSET], [1.45, topY(1.45), zr], [1.45, topY(1.45), -zr], [0, APEX, -(H - INSET)]], 3, 3, steel);
+  panel('tonneau', [[1.45, topY(1.45), zr], [L, TAIL_Y, H], [L, TAIL_Y, -H], [1.45, topY(1.45), -zr]], 3, 3, steel, { detach: 0.33 });
+  panel('front', [[-L, BOT, -H], [-L, BOT, H], [-L, NOSE_Y, H], [-L, NOSE_Y, -H]], 4, 2, steel);
+  panel('rear', [[L, BOT, H], [L, BOT, -H], [L, TAIL_Y, -H], [L, TAIL_Y, H]], 4, 2, steel);
+
+  /* ---------- chassis, angular wheel-arch trims, lights, wheels, battery ---------- */
+  const chassisB = new GeoBatch();
+  chassisB.add(box(5.1, 0.28, 1.8), 0x24222a, { p: [0, 0.52, 0] });
+  chassisB.add(box(0.2, 0.2, 2.0), 0x3a3842, { p: [-1.75, 0.45, 0] });
+  chassisB.add(box(0.2, 0.2, 2.0), 0x3a3842, { p: [1.75, 0.45, 0] });
+  for (const s of [1, -1]) {
+    // angular wheel arches + rocker skirt, slightly proud of the side panels
+    for (const wx of [-1.75, 1.75]) {
+      const sh = new THREE.Shape();
+      sh.moveTo(wx - 0.72, BOT - 0.02); sh.lineTo(wx - 0.5, BOT + 0.4); sh.lineTo(wx + 0.5, BOT + 0.4); sh.lineTo(wx + 0.72, BOT - 0.02); sh.closePath();
+      chassisB.add(new THREE.ShapeGeometry(sh), 0x2c2e36, { p: [0, 0, s * (H + 0.012)], r: [0, s > 0 ? 0 : Math.PI, 0], s: [s > 0 ? 1 : -1, 1, 1] });
+    }
+    chassisB.add(box(5.4, 0.1, 0.03), 0x2c2e36, { p: [0, BOT + 0.03, s * (H + 0.012)] });
+  }
+  const chassis = new THREE.Mesh(chassisB.build(), darkMat);
+  body.add(chassis);
+
+  const lightsB = new GeoBatch();
+  lightsB.add(box(0.04, 0.05, 2.1), 0xf4fbff, { p: [-L - 0.012, NOSE_Y - 0.04, 0] });
+  lightsB.add(box(0.04, 0.06, 2.1), 0xff2a3c, { p: [L + 0.012, TAIL_Y - 0.06, 0] });
+  const lights = new THREE.Mesh(lightsB.build(), lightsMat);
+  body.add(lights);
+
+  const wheelB = new GeoBatch();
+  wheelB.add(cyl(0.45, 0.45, 0.34, 10), 0x1d1c22, { r: [Math.PI / 2, 0, 0] });
+  wheelB.add(cyl(0.3, 0.3, 0.36, 6), 0x8d939e, { r: [Math.PI / 2, 0, 0] });
+  wheelB.add(cyl(0.08, 0.08, 0.38, 6), 0x2a2a30, { r: [Math.PI / 2, 0, 0] });
+  const wheelGeo = wheelB.build();
+  const WHEEL_HOME = [[-1.75, 0.45, H - 0.17], [1.75, 0.45, H - 0.17], [-1.75, 0.45, -(H - 0.17)], [1.75, 0.45, -(H - 0.17)]];
+  const wheels = WHEEL_HOME.map((p) => { const m = new THREE.Mesh(wheelGeo, darkMat); m.position.set(p[0], p[1], p[2]); root.add(m); return m; });
+
+  const battB = new GeoBatch();
+  battB.add(box(2.4, 0.34, 1.4), 0x2f4a3c, { p: [0, 0.17, 0] });
+  for (let i = 0; i < 6; i++) for (let k = 0; k < 3; k++) battB.add(cyl(0.12, 0.12, 0.08, 6), 0x9bd36a, { p: [-0.95 + i * 0.38, 0.38, -0.4 + k * 0.4] });
+  battB.add(cyl(0.07, 0.07, 0.16, 6), 0xd8322f, { p: [1.0, 0.42, 0.55] });
+  battB.add(cyl(0.07, 0.07, 0.16, 6), 0x1a1a1a, { p: [1.0, 0.42, -0.55] });
+  battB.add(box(1.0, 0.02, 0.3), 0xf2c230, { p: [0, 0.345, 0.55] });
+  const battery = new THREE.Mesh(battB.build(), Mat.toon(0xffffff, { vertexColors: true, rim: 0.4 }));
+  battery.visible = false;
+  root.add(battery);
+
+  const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0), AXLE = new THREE.Vector3(0, 0, 1);
+  const shadow = Shadows.track(root, 6.6, 2.9);
+  shadow.yaw = () => root.rotation.y;
+
+  /* ---------- dynamic state ---------- */
+  const S = {
+    root, body, panels, maxHP: MAX_HP, hp: MAX_HP, hpLag: MAX_HP, hits: 0,
+    cracked: false, destroyed: false, detached: 0,
+    vx: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0, bounce: 0, bounceV: 0, flash: 0,
+    collapseT: 0, smokeAcc: 0, sparkT: 0, collapseTilt: 0,
+    loose: [],
+    /** 0 pristine, 1 cracked glass, 2 dented, 3 parts flying, 4 destroyed. */
+    get stage() { return this.destroyed ? 4 : this.detached > 0 ? 3 : this.hp <= MAX_HP * CONFIG.DENT_FROM ? 2 : this.hp < MAX_HP ? 1 : 0; },
+    /** World X of the nose (the fighter's target edge) and the tail. */
+    frontX() { return root.position.x - L * Math.cos(YAW); },
+    backX() { return root.position.x + L * Math.cos(YAW); },
+
+    /**
+     * Take a hit. info: { dmg, power (≈1 punch, 1.5 kick, 3 special), y (impact height) }.
+     * Returns the actual damage dealt (0 if already wrecked).
+     */
+    hit(info) {
+      if (this.destroyed) return 0;
+      const dmg = Math.min(this.hp, info.dmg);
+      const power = info.power ?? 1;
+      this.hp -= dmg;
+      this.hits++;
+      this.flash = 1;
+      // suspension and knockback
+      this.pitchV -= 1.1 * power;
+      this.bounceV += 0.6 * power;
+      this.rollV += rand(-0.6, 0.6) * power;
+      this.vx += 0.5 * power;
+      const hx = this.frontX() + 0.1, hy = clamp(info.y ?? 1, 0.7, 1.6);
+      _v3.set(hx, hy, 0.4);
+      FX.burst('bolt', _v3, 2 + Math.round(power * 2));
+      // stage 1: the "armored" glass cracks on the very first hit
+      if (!this.cracked) {
+        this.cracked = true;
+        glass.map = glassCracked;
+        FX.burst('glass', _v3.set(hx + 0.9, 1.6, 0.6), 10);
+      }
+      // stage 2: dents
+      if (this.hp <= MAX_HP * CONFIG.DENT_FROM) {
+        const n = power >= 2.5 ? 4 : power > 1.2 ? 2 : 1;
+        for (let i = 0; i < n; i++) this.dentRandom(0.1 + 0.06 * power);
+      }
+      // stage 3: panels fly off at their thresholds
+      const frac = this.hp / MAX_HP;
+      for (const p of panels) if (p.detachAt && !p.loose && frac <= p.detachAt) this.detach(p, 1);
+      // stage 4: collapse
+      if (this.hp <= 0) this.destroy();
+      return dmg;
+    },
+
+    /** Dent a random steel panel, biased toward the front half (where the fists land). */
+    dentRandom(depth) {
+      const cands = panels.filter((p) => !p.loose && !p.glass && p.side >= 0);
+      if (!cands.length) return;
+      const front = cands.filter((p) => p.home.x < 0);
+      const p = (Math.random() < 0.7 && front.length ? pick(front) : pick(cands));
+      const pos = p.mesh.geometry.attributes.position;
+      const ci = (Math.random() * pos.count) | 0;
+      this.dent(p, _v1.set(p.base[ci * 3], p.base[ci * 3 + 1], p.base[ci * 3 + 2]), rand(0.35, 0.6), depth);
+    },
+    /** Push vertices near `center` (panel-local) inward along the panel normal. */
+    dent(p, center, radius, depth) {
+      const geo = p.mesh.geometry, pos = geo.attributes.position, col = geo.attributes.color;
+      for (let i = 0; i < pos.count; i++) {
+        const bx = p.base[i * 3], by = p.base[i * 3 + 1], bz = p.base[i * 3 + 2];
+        const d = Math.hypot(bx - center.x, by - center.y, bz - center.z);
+        if (d >= radius) continue;
+        const f = (1 - d / radius) ** 2;
+        p.dent[i] = Math.min(0.32, p.dent[i] + depth * f * rand(0.7, 1.2));
+        const k = p.dent[i];
+        pos.setXYZ(i, bx - p.normal.x * k, by - p.normal.y * k, bz - p.normal.z * k);
+        const shade = 1 - Math.min(0.5, k * 2.2);
+        col.setXYZ(i, Math.min(col.getX(i), shade), Math.min(col.getY(i), shade), Math.min(col.getZ(i), shade * 1.03));
+      }
+      pos.needsUpdate = true; col.needsUpdate = true;
+      geo.computeVertexNormals();
+    },
+
+    /** Rip a panel off with simple physics (velocity, gravity, spin, bounce). */
+    detach(p, strength) {
+      if (p.loose) return;
+      p.loose = true;
+      this.detached++;
+      p.mesh.getWorldPosition(_v3);
+      if (p.glass) {                       // glass doesn't fly as a sheet, it shatters
+        p.mesh.visible = false;
+        FX.burst('glass', _v3, 18);
+        return;
+      }
+      scene.attach(p.mesh);
+      const n = _v1.copy(p.normal).applyQuaternion(root.quaternion);
+      const v = new THREE.Vector3(n.x * rand(2, 3.5) + rand(1, 3), rand(4, 7), n.z * rand(2, 3.5) + rand(-0.5, 1.5)).multiplyScalar(strength);
+      this.loose.push({ mesh: p.mesh, normal: p.normal, v, w: new THREE.Vector3(rand(-8, 8), rand(-6, 6), rand(-8, 8)).multiplyScalar(strength), rest: false });
+      FX.burst('bolt', _v3, 6);
+    },
+
+    /** Stage 4: everything comes apart into a pile around a smoking battery. */
+    destroy() {
+      this.destroyed = true;
+      this.collapseT = 0;
+      this.collapseTilt = rand(-0.12, 0.12);
+      for (const p of panels) if (!p.loose) this.detach(p, 0.55);
+      wheels.forEach((w, i) => {
+        scene.attach(w);
+        this.loose.push({ mesh: w, normal: AXLE, v: new THREE.Vector3(rand(-2, 3), rand(2, 4), i < 2 ? rand(1, 3) : rand(-3, -1)), w: new THREE.Vector3(rand(-6, 6), 0, rand(-12, 12)), rest: false });
+      });
+      lights.visible = false;
+      battery.visible = true;
+      battery.position.set(rand(-0.3, 0.3), 0, 0);
+      battery.rotation.set(0, rand(-0.3, 0.3), 0);
+      root.getWorldPosition(_v3); _v3.y = 1;
+      FX.burst('bolt', _v3, 24);
+      FX.burst('glass', _v3, 20);
+      FX.burst('spark', _v3, 30);
+      for (let i = 0; i < 8; i++) FX.burst('smoke', _v3, 1);
+    },
+
+    update(dt) {
+      // suspension springs (pitch, roll, bounce)
+      const spring = (x, v, k, c) => v + (-k * x - c * v) * dt;
+      this.pitchV = spring(this.pitch, this.pitchV, 140, 9); this.pitch += this.pitchV * dt;
+      this.rollV = spring(this.roll, this.rollV, 120, 8); this.roll += this.rollV * dt;
+      this.bounceV = spring(this.bounce, this.bounceV, 160, 10); this.bounce += this.bounceV * dt;
+      // knockback slide with friction
+      root.position.x = clamp(root.position.x + this.vx * dt, START_X, MAX_X);
+      this.vx *= Math.exp(-6 * dt);
+      this.flash = Math.max(0, this.flash - dt * 8);
+      for (const m of flashMats) m.emissive.setScalar(this.flash * 0.6);
+      this.hpLag = this.hpLag > this.hp ? Math.max(this.hp, this.hpLag - MAX_HP * 0.35 * dt) : this.hp;
+
+      if (this.destroyed) {
+        // the frame slumps onto the dock
+        this.collapseT += dt;
+        const k = Math.min(1, this.collapseT * 3);
+        body.position.y = lerp(0, -0.42, k);
+        body.rotation.set(this.collapseTilt * k, 0, -0.08 * k);
+        // smoking battery with occasional sparks
+        this.smokeAcc += dt;
+        if (this.smokeAcc > 0.11) {
+          this.smokeAcc = 0;
+          battery.getWorldPosition(_v3); _v3.x += rand(-0.8, 0.8); _v3.y += 0.45; _v3.z += rand(-0.4, 0.4);
+          FX.burst('smoke', _v3, 1);
+        }
+        this.sparkT -= dt;
+        if (this.sparkT < 0) {
+          this.sparkT = rand(0.25, 0.9);
+          battery.getWorldPosition(_v3); _v3.x += 1.0; _v3.y += 0.45; _v3.z += 0.55;
+          FX.burst('spark', _v3, 8);
+        }
+      } else {
+        body.position.y = this.bounce * 0.12;
+        body.rotation.set(this.roll * 0.05, 0, this.pitch * 0.06);
+        // once the hood is gone the engine bay smokes, and the light bar flickers
+        if (this.hp < MAX_HP * 0.62) {
+          this.smokeAcc += dt * (1.5 - this.hp / MAX_HP);
+          if (this.smokeAcc > 0.35) { this.smokeAcc = 0; _v3.set(this.frontX() + 0.8, 1.3, 0.2); FX.burst('smoke', _v3, 1, { scale: 0.6 }); }
+        }
+        lights.visible = this.hp > MAX_HP * 0.4 || Math.random() > 0.15;
+      }
+      this.updateLoose(dt);
+    },
+
+    /** Integrate flying parts: gravity, spin, bounce on the dock, settle. */
+    updateLoose(dt) {
+      const lowest = (m) => {
+        m.updateMatrixWorld();
+        const pos = m.geometry.attributes.position;
+        let minY = Infinity;
+        for (let i = 0; i < pos.count; i += 2) {
+          _v1.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          if (_v1.y < minY) minY = _v1.y;
+        }
+        return minY;
+      };
+      for (const L2 of this.loose) {
+        const m = L2.mesh;
+        if (L2.rest) {
+          // settle: topple flat onto the dock (normal eased toward vertical)
+          if (L2.settle < 1) {
+            L2.settle = Math.min(1, L2.settle + dt * 2.5);
+            m.quaternion.slerp(L2.qFlat, 1 - Math.exp(-10 * dt));
+            m.position.y -= lowest(m) - 0.01;
+          }
+          continue;
+        }
+        L2.v.y -= 20 * dt;
+        m.position.addScaledVector(L2.v, dt);
+        m.rotation.x += L2.w.x * dt; m.rotation.y += L2.w.y * dt; m.rotation.z += L2.w.z * dt;
+        const minY = lowest(m);
+        if (minY < 0) {
+          m.position.y -= minY;
+          if (L2.v.y < 0) L2.v.y = -L2.v.y * 0.32;
+          L2.v.x *= 0.6; L2.v.z *= 0.6; L2.w.multiplyScalar(0.55);
+          if (Math.abs(L2.v.y) < 1.2 && L2.v.lengthSq() < 2) {
+            L2.rest = true; L2.settle = 0;
+            const n = _v1.copy(L2.normal).applyQuaternion(m.quaternion);
+            L2.qFlat = new THREE.Quaternion().setFromUnitVectors(n, n.y >= 0 ? UP : DOWN).multiply(m.quaternion);
+          }
+        }
+        // keep scattered parts on the dock
+        m.position.z = clamp(m.position.z, -2.4, 4);
+      }
+    },
+
+    /** Restore a factory-fresh truck (reuses every mesh; nothing is reallocated). */
+    reset() {
+      this.hp = this.hpLag = MAX_HP; this.hits = 0;
+      this.cracked = this.destroyed = false; this.detached = 0;
+      this.vx = this.pitch = this.pitchV = this.roll = this.rollV = this.bounce = this.bounceV = this.flash = 0;
+      this.loose.length = 0;
+      glass.map = glassClean;
+      root.position.set(START_X, 0, 0);
+      body.position.set(0, 0, 0); body.rotation.set(0, 0, 0);
+      for (const p of panels) {
+        p.loose = false;
+        body.add(p.mesh);
+        p.mesh.position.copy(p.home); p.mesh.rotation.set(0, 0, 0); p.mesh.visible = true;
+        const geo = p.mesh.geometry;
+        geo.attributes.position.array.set(p.base); geo.attributes.position.needsUpdate = true;
+        geo.attributes.color.array.fill(1); geo.attributes.color.needsUpdate = true;
+        p.dent.fill(0);
+        geo.computeVertexNormals();
+      }
+      wheels.forEach((w, i) => { root.add(w); w.position.set(...WHEEL_HOME[i]); w.rotation.set(0, 0, 0); });
+      lights.visible = true;
+      battery.visible = false;
+    },
+  };
+  return S;
+})();
+
+/* =====================================================================================
+ * 8. FX / JUICE — instanced particle pools (debris, glow, smoke).
+ *    Three InstancedMeshes cover every particle in the game: 3 draw calls total.
+ * ===================================================================================== */
+const FX = (() => {
+  /** A fixed-size pool of particles rendered by one InstancedMesh. */
+  class Pool {
+    constructor(geo, mat, max) {
+      this.max = max;
+      this.mesh = new THREE.InstancedMesh(geo, mat, max);
+      this.mesh.frustumCulled = false;
+      this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.mesh.setColorAt(0, _col.setHex(0xffffff));
+      scene.add(this.mesh);
+      const f = (n = 1) => new Float32Array(max * n);
+      this.p = f(3); this.v = f(3); this.r = f(3); this.w = f(3);
+      this.life = f(); this.maxLife = f(); this.s0 = f(); this.s1 = f(); this.grav = f(); this.drag = f(); this.bounce = f();
+      this.next = 0;
+      for (let i = 0; i < max; i++) this.hide(i);
+    }
+    hide(i) { _dummy.position.set(0, -50, 0); _dummy.scale.setScalar(0); _dummy.updateMatrix(); this.mesh.setMatrixAt(i, _dummy.matrix); }
+    /** Spawn one particle (round-robin; the oldest gets recycled when full). */
+    spawn(px, py, pz, vx, vy, vz, o) {
+      const i = this.next; this.next = (this.next + 1) % this.max;
+      const i3 = i * 3;
+      this.p[i3] = px; this.p[i3 + 1] = py; this.p[i3 + 2] = pz;
+      this.v[i3] = vx; this.v[i3 + 1] = vy; this.v[i3 + 2] = vz;
+      this.r[i3] = rand(0, 6); this.r[i3 + 1] = rand(0, 6); this.r[i3 + 2] = rand(0, 6);
+      const sp = o.spin ?? 10;
+      this.w[i3] = rand(-sp, sp); this.w[i3 + 1] = rand(-sp, sp); this.w[i3 + 2] = rand(-sp, sp);
+      this.life[i] = this.maxLife[i] = o.life;
+      this.s0[i] = o.s0; this.s1[i] = o.s1 ?? o.s0;
+      this.grav[i] = o.grav ?? 18; this.drag[i] = o.drag ?? 0.5; this.bounce[i] = o.bounce ?? 0.3;
+      this.mesh.setColorAt(i, _col.setHex(o.color));
+      this.mesh.instanceColor.needsUpdate = true;
+    }
+    update(dt) {
+      const { p, v, r, w } = this;
+      for (let i = 0; i < this.max; i++) {
+        if (this.life[i] <= 0) continue;
+        this.life[i] -= dt;
+        if (this.life[i] <= 0) { this.hide(i); continue; }
+        const i3 = i * 3;
+        const dragK = Math.exp(-this.drag[i] * dt);
+        v[i3] *= dragK; v[i3 + 2] *= dragK;
+        v[i3 + 1] = v[i3 + 1] * dragK - this.grav[i] * dt;
+        p[i3] += v[i3] * dt; p[i3 + 1] += v[i3 + 1] * dt; p[i3 + 2] += v[i3 + 2] * dt;
+        const t = 1 - this.life[i] / this.maxLife[i];
+        let s = lerp(this.s0[i], this.s1[i], t);
+        if (this.life[i] < 0.25) s *= this.life[i] / 0.25;   // shrink out
+        // bounce on the dock and slide to rest
+        if (this.bounce[i] > 0 && p[i3 + 1] < s * 0.5) {
+          p[i3 + 1] = s * 0.5;
+          if (v[i3 + 1] < 0) v[i3 + 1] = -v[i3 + 1] * this.bounce[i];
+          v[i3] *= 0.7; v[i3 + 2] *= 0.7; w[i3] *= 0.6; w[i3 + 1] *= 0.6; w[i3 + 2] *= 0.6;
+        }
+        r[i3] += w[i3] * dt; r[i3 + 1] += w[i3 + 1] * dt; r[i3 + 2] += w[i3 + 2] * dt;
+        _dummy.position.set(p[i3], p[i3 + 1], p[i3 + 2]);
+        _dummy.rotation.set(r[i3], r[i3 + 1], r[i3 + 2]);
+        _dummy.scale.setScalar(Math.max(0.0001, s));
+        _dummy.updateMatrix();
+        this.mesh.setMatrixAt(i, _dummy.matrix);
+      }
+      this.mesh.instanceMatrix.needsUpdate = true;
+    }
+    clear() { for (let i = 0; i < this.max; i++) { this.life[i] = 0; this.hide(i); } this.mesh.instanceMatrix.needsUpdate = true; }
+  }
+
+  const debris = new Pool(box(1, 1, 1), Mat.toon(0xffffff, { rim: 0.5 }), 260);
+  const glow = new Pool(new THREE.OctahedronGeometry(0.7, 0), Mat.basic(0xffffff, { fog: false }), 220);
+  const smoke = new Pool(new THREE.IcosahedronGeometry(0.5, 0), Mat.toon(0xffffff, { rim: 0.15 }), 110);
+
+  /** Named particle recipes. burst(kind, position, count, {scale, dir}). */
+  const RECIPES = {
+    bolt: (o) => [debris, { life: rand(1.2, 2.2), s0: rand(0.05, 0.1) * o.scale, color: pick([0x8d939e, 0x5d636e, 0xc8ced8, 0x2a2a30]), grav: 18, bounce: 0.4 }, 4, 5],
+    chip: (o) => [debris, { life: rand(1.5, 2.6), s0: rand(0.1, 0.22) * o.scale, color: pick([0xc8ced8, 0xb0b6c0, 0xe0e4ea]), grav: 18, bounce: 0.3 }, 3.5, 4],
+    glass: (o) => [debris, { life: rand(1.2, 2.0), s0: rand(0.05, 0.12) * o.scale, color: pick([0xbfe6ff, 0x8fc8ee, 0xffffff, 0x6aa0c8]), grav: 16, bounce: 0.35, spin: 16 }, 3, 4],
+    spark: (o) => [glow, { life: rand(0.25, 0.6), s0: rand(0.06, 0.12) * o.scale, s1: 0.01, color: pick([0xfff27a, 0xffc040, 0xffffff]), grav: 9, drag: 1, bounce: 0.5, spin: 0 }, 6, 6],
+    smoke: (o) => [smoke, { life: rand(1.4, 2.2), s0: rand(0.2, 0.32) * o.scale, s1: rand(0.75, 1.1) * o.scale, color: pick([0x5a5462, 0x6c6674, 0x7e7886]), grav: -1.8, drag: 1.2, bounce: 0, spin: 1.5 }, 0.5, 0.6],
+    puff: (o) => [smoke, { life: rand(0.4, 0.7), s0: rand(0.2, 0.35) * o.scale, s1: rand(0.6, 0.9) * o.scale, color: pick([0xe8dcd0, 0xd8ccc0]), grav: -1, drag: 4, bounce: 0, spin: 2 }, 3, 2],
+    flame: (o) => [glow, { life: rand(0.3, 0.55), s0: rand(0.18, 0.3) * o.scale, s1: rand(0.45, 0.7) * o.scale, color: pick([0xffe24a, 0xff9a2a, 0xff5a1a, 0xfff6b0]), grav: -3, drag: 2, bounce: 0, spin: 4 }, 1.5, 1.5],
+  };
+
+  return {
+    debris, glow, smoke,
+    /**
+     * Spawn `count` particles of a recipe at `pos`. opts.dir biases the velocity
+     * (e.g. away from a punch), opts.scale scales the size.
+     */
+    burst(kind, pos, count = 1, opts = {}) {
+      const o = { scale: opts.scale ?? 1 };
+      for (let i = 0; i < count; i++) {
+        const [pool, cfg, spread, up] = RECIPES[kind](o);
+        const d = opts.dir;
+        pool.spawn(
+          pos.x + rand(-0.15, 0.15), pos.y + rand(-0.15, 0.15), pos.z + rand(-0.15, 0.15),
+          rand(-spread, spread) * 0.6 + (d ? d.x : 0), rand(0.3, 1) * up + (d ? d.y : 0), rand(-spread, spread) * 0.6 + (d ? d.z : 0),
+          cfg,
+        );
+      }
+    },
+    update(dt) { debris.update(dt); glow.update(dt); smoke.update(dt); },
+    clear() { debris.clear(); glow.clear(); smoke.clear(); },
+  };
+})();
 
 /* =====================================================================================
  * 11. STATES — title → select → vs → fight → results, plus the fixed-timestep main loop.
@@ -1223,14 +1751,18 @@ const States = {
     },
   },
   fight: {
-    enter() { Game.stateTime = 0; this.timer = CONFIG.FIGHT_TIME; },
+    enter() { Game.stateTime = 0; this.timer = CONFIG.FIGHT_TIME; Truck.reset(); FX.clear(); },
     update(dt) {
       this.timer = Math.max(0, this.timer - dt);
       if (this.timer <= 0) this.finish();
     },
     finish() { Game.lastResult = { win: false, timeLeft: this.timer }; setState('results'); },
     frame() { CamRig.to(0.5, 2.5, 17, 0.5, 1.85, 0, true); },
-    hud(ctx) { PixelFont.draw(ctx, String(Math.ceil(this.timer)), 240, 10, { scale: 4, align: 'center' }); },
+    hud(ctx) {
+      PixelFont.draw(ctx, String(Math.ceil(this.timer)), 240, 10, { scale: 4, align: 'center' });
+      PixelFont.draw(ctx, 'CYBERCHUNK', 470, 8, { align: 'right', color: '#fff36b' });
+      drawBar(ctx, 270, 18, 200, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
+    },
   },
   results: {
     enter() { Game.stateTime = 0; this.choice = 0; },
@@ -1265,6 +1797,8 @@ const perf = { fps: 60, frames: 0, acc: 0 };
 function simulate(dt) {
   Game.stateTime += dt;
   Stage.update(dt);
+  Truck.update(dt);
+  FX.update(dt);
   Game.state.update?.(dt);
   Input.endTick(); // edge presses are consumed by exactly one sim tick
 }
@@ -1298,9 +1832,13 @@ function frame(now) {
 window.CS = {
   ready: false,
   get state() { return Game.stateName; },
-  info: () => ({ state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
+  info: () => ({
+    state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
+    truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
+  }),
   debug: {
     endFight: () => Game.stateName === 'fight' && States.fight.finish(),
+    hitTruck: (dmg = 30, power = 1) => Truck.hit({ dmg, power, y: 1.1 }),
     /** Pin the camera: cam(px, py, pz, lx, ly, lz) — call with no args to release. */
     cam: (...a) => { Game.camOverride = a.length ? a : null; },
   },
