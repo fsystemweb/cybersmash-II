@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>CYBER SMASH</title>
-<meta name="description" content="CYBER SMASH - wreck the Cyberchunk in under 40 seconds. A 3D arcade bonus-stage parody built with three.js.">
+<title>CYBER SMASH II</title>
+<meta name="description" content="CYBER SMASH II - wreck the Cyberchunk in under 40 seconds. A 3D arcade bonus-stage parody built with three.js.">
 <style>
   /* Page: black letterbox around a 16:9 stage. */
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
@@ -3334,7 +3334,12 @@ const States = {
       const t = Game.stateTime;
       const drop = Math.max(0, 1 - t * 2.5);
       PixelFont.draw(ctx, 'CYBER', 240, 34 - drop * 80, { scale: 8, align: 'center', color: ['#ffffff', '#c8d4ff', '#8a9ad8', '#5a6ab0'], outline: 3 });
-      PixelFont.draw(ctx, 'SMASH', 240, 94 + drop * 80, { scale: 8, align: 'center', color: ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'], outline: 3, pop: 1 + Math.sin(t * 3) * 0.02 });
+      // SMASH + a roman-numeral II that stamps in once the logo has landed
+      const sw = PixelFont.measure('SMASH', 8), iw = PixelFont.measure('II', 8), gap = 20;
+      const sx = 240 - (sw + gap + iw) / 2;
+      PixelFont.draw(ctx, 'SMASH', sx, 94 + drop * 80, { scale: 8, color: ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'], outline: 3, pop: 1 + Math.sin(t * 3) * 0.02 });
+      const stamp = Math.max(0, Math.min(1, (t - 0.45) * 5));
+      if (stamp > 0) PixelFont.draw(ctx, 'II', sx + sw + gap, 94, { scale: 8, color: ['#e0fcff', '#6bf3ff', '#3c9aff', '#b03cff'], outline: 3, pop: 1 + (1 - stamp) * 1.5 + Math.sin(t * 3 + 1.5) * 0.02 });
       PixelFont.draw(ctx, 'THE BONUS STAGE OF THE CENTURY', 240, 160, { align: 'center', color: '#ffd8f0' });
       if (Math.floor(t * 2.5) % 2 === 0) PixelFont.draw(ctx, 'PRESS ENTER', 240, 186, { scale: 2, align: 'center' });
       PixelFont.draw(ctx, 'ARROWS/AD MOVE  J PUNCH  K KICK  L SPECIAL  M MUTE', 240, 236, { align: 'center', color: '#c8b8ff' });

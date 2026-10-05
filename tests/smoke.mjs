@@ -1,4 +1,4 @@
-// CYBER SMASH — headless smoke test.
+// CYBER SMASH II — headless smoke test.
 //
 // Serves the repo root with `python3 -m http.server`, opens index.html in headless Chromium
 // (SwiftShader so WebGL works without a GPU), drives the game through its states with the
