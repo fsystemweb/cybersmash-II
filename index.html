@@ -41,15 +41,34 @@ const CONFIG = {
   CAMERA_FOV: 28,
   TRUCK_HP: 1000,
   DENT_FROM: 0.85,         // health fraction below which hits dent the body
+  // combat (damage in HP; the special is 3x a punch)
+  PUNCH: { dmg: 10, power: 1, reach: 0.95, dur: 0.32, hitAt: 0.32 },
+  KICK: { dmg: 15, power: 1.5, reach: 1.3, dur: 0.5, hitAt: 0.42 },
+  SPECIAL_DMG: 30,
+  SPECIAL_COOLDOWN: 3,
+  WALK_SPEED: 3.4,
+  BODY_R: 0.42,            // fighter half-width on the fight plane
+  ARENA_MIN_X: -9,
+  FIGHTER_START_X: -4.2,
 };
 
+/**
+ * The roster: affectionate parody caricatures. `special` names the L move (PR 7),
+ * `win` / `lose` are the results-screen lines, `color` tints their UI.
+ */
 const FIGHTERS = [
-  { id: 'tromp',    name: 'DONALD TROMP' },
-  { id: 'muskrat',  name: 'ELON MUSKRAT' },
-  { id: 'zuck',     name: 'MARK ZUCKERBOT' },
-  { id: 'hassabyte',name: 'DEMIS HASSABYTE' },
-  { id: 'hwatt',    name: 'JENSEN HWATT' },
-  { id: 'oldman',   name: 'SAM OLDMAN' },
+  { id: 'tromp', name: 'DONALD TROMP', color: '#ff4a3c', special: "YOU'RE FIRED!",
+    win: 'TREMENDOUS SMASH. MAYBE THE BEST EVER.', lose: 'THE TIMER WAS RIGGED! TOTALLY RIGGED!' },
+  { id: 'muskrat', name: 'ELON MUSKRAT', color: '#9aa4b8', special: 'NOT-A-FLAMETHROWER',
+    win: 'FULL SELF-DESTRUCTING! ...SORRY, INVESTORS.', lose: "IT'S A FEATURE, NOT A BUG." },
+  { id: 'zuck', name: 'MARK ZUCKERBOT', color: '#5ad0ff', special: 'METAVERSE TAKEDOWN',
+    win: 'ENGAGEMENT: MAXIMIZED.', lose: 'PIVOTING TO... SOMETHING ELSE.' },
+  { id: 'hassabyte', name: 'DEMIS HASSABYTE', color: '#7ab8ff', special: 'ALPHASTRIKE',
+    win: 'AS PREDICTED. FORTY SECONDS AGO.', lose: 'FASCINATING. MORE TRAINING DATA NEEDED.' },
+  { id: 'hwatt', name: 'JENSEN HWATT', color: '#76d43a', special: 'GPU OVERCLOCK',
+    win: 'THE MORE YOU SMASH, THE MORE YOU SAVE!', lose: 'SHIPPING NEXT QUARTER. PROBABLY.' },
+  { id: 'oldman', name: 'SAM OLDMAN', color: '#ffb84a', special: 'AGI BEAM',
+    win: 'FEELS LIKE AGI TO ME.', lose: "WE'RE GONNA NEED MORE COMPUTE." },
 ];
 
 /* =====================================================================================
@@ -569,6 +588,7 @@ resize();
 const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
 const cyl = (rt, rb, h, seg = 8) => new THREE.CylinderGeometry(rt, rb, h, seg);
 const sph = (r, ws = 10, hs = 8) => new THREE.SphereGeometry(r, ws, hs);
+const torus = (r, t, rs, ts) => new THREE.TorusGeometry(r, t, rs, ts);
 const _dummy = new THREE.Object3D();
 
 /* ---------- Blob shadows: one instanced quad per tracked object (1 draw call total) ---------- */
@@ -1586,6 +1606,514 @@ const Truck = (() => {
 })();
 
 /* =====================================================================================
+ * 6. FIGHTERS — chibi caricatures on the shared rig: one builder per character,
+ *    procedural poses (idle, walk, punch, kick, victory, defeat) and the Fighter
+ *    gameplay controller.
+ * ===================================================================================== */
+const FighterKit = (() => {
+  const mats = {
+    toon: Mat.toon(0xffffff, { vertexColors: true, rim: 0.45 }),
+    // Jensen's jacket: glossy leather (Phong highlight instead of toon bands)
+    gloss: new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 70, specular: 0xb0b0c0 }),
+  };
+
+  /** Standard chibi body: big head, small torso, big fists. o: colours + optional kinds. */
+  function baseBody(rig, o) {
+    const k = o.shirtKind || 'toon';
+    rig.add('hips', box(0.34, 0.2, 0.25), o.pants, { p: [0, 0.02, 0] });
+    rig.add('torso', box(0.44, 0.44, 0.28), o.shirt, { p: [0, 0.22, 0] }, k);
+    rig.add('torso', cyl(0.09, 0.1, 0.1, 6), o.skin, { p: [0, 0.46, 0] });
+    rig.add('head', sph(0.36, 12, 10), o.skin, { p: [0, 0.34, 0] });
+    rig.add('head', sph(0.075, 6, 5), o.skin, { p: [0.375, 0.32, 0.02] });
+    rig.add('head', sph(0.075, 6, 5), o.skin, { p: [-0.375, 0.32, 0.02] });
+    for (const s of ['L', 'R']) {
+      rig.add('sh' + s, sph(0.1, 8, 6), o.sleeve ?? o.shirt, {}, k);
+      rig.add('sh' + s, box(0.14, 0.22, 0.14), o.sleeve ?? o.shirt, { p: [0, -0.1, 0] }, k);
+      rig.add('el' + s, box(0.13, 0.2, 0.13), o.forearm ?? o.sleeve ?? o.shirt, { p: [0, -0.09, 0] }, o.forearm ? 'toon' : k);
+      rig.add('hand' + s, sph(o.fist ?? 0.1, 8, 6), o.skin, { p: [0, -0.02, 0] });
+      rig.add('hip' + s, box(0.16, 0.28, 0.17), o.pants, { p: [0, -0.13, 0] });
+      rig.add('knee' + s, box(0.15, 0.26, 0.16), o.pants, { p: [0, -0.12, 0] });
+      rig.add('knee' + s, box(0.17, 0.1, 0.3), o.shoes, { p: [0, -0.27, 0.05] });
+    }
+  }
+  /** Eyes, brows and mouth on their own pivots so they can blink / emote. */
+  function face(rig, o = {}) {
+    rig.pivot('eyes', 'head', [0, 0.37, 0.325]);
+    const es = o.eyeScale ?? 1;
+    for (const sx of [1, -1]) {
+      if (o.eyeWhites) rig.add('eyes', sph(0.07 * es, 8, 6), 0xffffff, { p: [sx * 0.12, 0, -0.005], s: [1, 1, 0.5] });
+      rig.add('eyes', sph(0.052 * es, 8, 6), o.eyeColor ?? 0x1a1420, { p: [sx * 0.12, 0, o.eyeWhites ? 0.02 : 0], s: [0.8, 1.15, 0.5] });
+      rig.add('eyes', sph(0.016, 4, 3), 0xffffff, { p: [sx * 0.12 + 0.016, 0.024, o.eyeWhites ? 0.04 : 0.025] });
+    }
+    rig.pivot('brows', 'head', [0, 0.48, 0.32]);
+    const tilt = o.browTilt ?? 0.1;
+    rig.add('brows', box(0.13, 0.03, 0.03), o.brow ?? 0x2a1a14, { p: [0.12, 0, 0], r: [0, 0, -tilt] });
+    rig.add('brows', box(0.13, 0.03, 0.03), o.brow ?? 0x2a1a14, { p: [-0.12, 0, 0], r: [0, 0, tilt] });
+    rig.pivot('mouth', 'head', [0, 0.2, 0.325]);
+    rig.add('mouth', box(o.mouthW ?? 0.12, o.mouthH ?? 0.035, 0.03), 0x6a1a24, {});
+    if (o.teeth) rig.add('mouth', box((o.mouthW ?? 0.12) * 0.85, 0.018, 0.035), 0xffffff, { p: [0, 0.006, 0] });
+  }
+  /** Generic hair cap: a squashed sphere pushed up/back so the face stays clear. */
+  // Slightly larger than the skull and nudged up/back: covers crown, back and sides,
+  // and the hairline falls across the upper forehead.
+  const hairCap = (rig, joint, color, o = {}) =>
+    rig.add(joint, sph(0.385, 12, 9), color, { p: [0, o.y ?? 0.4, o.z ?? -0.045], s: [1, o.sy ?? 0.92, 1] });
+
+  // Secondary-motion spring helper.
+  const spring = (st, target, k, c, dt) => { st.v += (-(st.x - target) * k - st.v * c) * dt; st.x += st.v * dt; return st.x; };
+
+  /* ---------- character builders: each returns extras { eyeOpen, update(dt, f) } ---------- */
+  const BUILDERS = {
+    tromp(rig) {
+      const SK = 0xf2a65a, SUIT = 0x1e2a55, WHITE = 0xf4f4f4, RED = 0xd8202a, GOLD = 0xf7c843;
+      baseBody(rig, { skin: SK, shirt: SUIT, pants: SUIT, shoes: 0x141414, fist: 0.075 });  // famously modest hands
+      rig.add('torso', box(0.54, 0.13, 0.31), SUIT, { p: [0, 0.39, 0] });                     // boxy suit shoulders
+      rig.add('torso', box(0.17, 0.2, 0.02), WHITE, { p: [0, 0.34, 0.142] });
+      rig.add('head', sph(0.385, 12, 9), GOLD, { p: [0, 0.38, -0.07], s: [1.02, 0.9, 1] });     // back hair
+      face(rig, { brow: 0xe8c070, browTilt: 0.12, mouthW: 0.08, mouthH: 0.05 });
+      rig.pivot('tie', 'torso', [0, 0.43, 0.16]);
+      rig.add('tie', box(0.09, 0.07, 0.045), RED, { p: [0, -0.02, 0] });
+      rig.add('tie', box(0.13, 0.64, 0.025), RED, { p: [0, -0.37, 0] });                       // the very long tie
+      rig.add('tie', box(0.092, 0.092, 0.025), RED, { p: [0, -0.69, 0], r: [0, 0, Math.PI / 4] });
+      rig.pivot('hair', 'head', [0, 0.56, 0]);
+      rig.add('hair', sph(0.37, 12, 8), GOLD, { p: [0, -0.07, -0.03], s: [1.05, 0.48, 1.06] });
+      rig.add('hair', sph(0.3, 10, 8), GOLD, { p: [0.05, 0.04, 0.13], s: [1.3, 0.42, 0.95], r: [0, 0, -0.14] }); // the swoop
+      rig.add('hair', box(0.52, 0.1, 0.2), GOLD, { p: [0.03, 0.0, 0.24], r: [-0.3, 0, -0.18] });
+      const tie = { x: 0, v: 0 }, flap = { x: 0, v: 0 }, hair = { x: 0, v: 0 };
+      return {
+        eyeOpen: 0.55,
+        onAttack() { tie.v -= 6; hair.v += 5; },
+        update(dt, f) {
+          const sp = Math.abs(f.vx) / CONFIG.WALK_SPEED;
+          // tie: flaps forward with motion and attacks, flutters while walking
+          const tx = spring(tie, -0.25 * sp, 60, 6, dt);
+          f.rig.j.tie.rotation.x = clamp(tx, -1.3, 0.05);
+          f.rig.j.tie.rotation.z = spring(flap, Math.sin(f.t * 17) * 0.25 * sp, 80, 5, dt);
+          // hair: bounces on its own spring, lagging behind the head
+          const hy = spring(hair, f.rig.j.body.position.y * -2, 90, 7, dt);
+          f.rig.j.hair.position.y = 0.56 + clamp(hy, -0.08, 0.12);
+          f.rig.j.hair.rotation.x = clamp(-hy * 1.5, -0.3, 0.3);
+        },
+      };
+    },
+    muskrat(rig) {
+      const SK = 0xf3d2b8, TEE = 0x1a1a1f, JEANS = 0x2c3a5c;
+      baseBody(rig, { skin: SK, shirt: TEE, forearm: SK, pants: JEANS, shoes: 0x222222 });
+      rig.add('torso', box(0.13, 0.026, 0.01), 0xe8e8e8, { p: [-0.035, 0.27, 0.142], r: [0, 0, 0.6] }); // chevron print
+      rig.add('torso', box(0.13, 0.026, 0.01), 0xe8e8e8, { p: [0.035, 0.27, 0.142], r: [0, 0, -0.6] });
+      hairCap(rig, 'head', 0x3a2a20, { y: 0.43, z: -0.07 });                                        // receding
+      face(rig, { brow: 0x3a2a20, browTilt: -0.18, mouthW: 0.17, teeth: false });
+      rig.add('mouth', box(0.07, 0.045, 0.02), 0xffffff, { p: [0, -0.035, 0.008] });            // buck teeth
+      rig.add('head', sph(0.05, 6, 5), 0xe89a90, { p: [0, 0.28, 0.355] });
+      for (const sx of [1, -1]) for (let i = 0; i < 3; i++)
+        rig.add('head', box(0.2, 0.01, 0.01), 0x2a2a2a, { p: [sx * 0.22, 0.24 + i * 0.03, 0.3], r: [0, sx * 0.5, sx * (i - 1) * 0.18] });
+      rig.pivot('ears', 'head', [0, 0.7, -0.02]);
+      for (const sx of [1, -1]) {
+        rig.add('ears', sph(0.13, 8, 6), 0x8a7a72, { p: [sx * 0.25, 0, 0], s: [1, 1, 0.45] });
+        rig.add('ears', sph(0.08, 6, 5), 0xf09aa8, { p: [sx * 0.25, 0, 0.04], s: [1, 1, 0.45] });
+      }
+      let twitch = 0;
+      return {
+        eyeOpen: 0.8,
+        mouthTilt: 0.18, // permanent smirk
+        update(dt, f) {
+          twitch -= dt;
+          if (twitch < -0.15) twitch = rand(0.6, 2.5);
+          f.rig.j.ears.rotation.z = twitch < 0 ? Math.sin(f.t * 60) * 0.15 : 0;
+        },
+      };
+    },
+    zuck(rig) {
+      const SK = 0xf6e2d6, HOOD = 0x8a8f99, JEANS = 0x37476a;
+      baseBody(rig, { skin: SK, shirt: HOOD, pants: JEANS, shoes: 0x9aa0a8 });
+      rig.add('torso', sph(0.22, 8, 6), 0x7a7f89, { p: [0, 0.47, -0.12], s: [1.25, 0.6, 0.8] }); // hood
+      rig.add('torso', box(0.02, 0.16, 0.02), 0xf0f0f0, { p: [0.06, 0.33, 0.145] });             // drawstrings
+      rig.add('torso', box(0.02, 0.16, 0.02), 0xf0f0f0, { p: [-0.06, 0.33, 0.145] });
+      rig.add('torso', box(0.3, 0.1, 0.02), 0x7a7f89, { p: [0, 0.1, 0.142] });                    // pocket
+      hairCap(rig, 'head', 0x6a4a30);
+      for (let i = 0; i < 9; i++) rig.add('head', sph(0.085, 6, 5), 0x6a4a30, { p: [Math.cos(i * 0.7) * 0.22, 0.68 + Math.sin(i * 1.3) * 0.03, -0.12 + (i % 3) * 0.12] }); // curls
+      face(rig, { brow: 0x6a4a30, browTilt: 0, mouthW: 0.1, eyeWhites: true, eyeScale: 1.15 });
+      // VR headset pushed up on the forehead
+      rig.add('head', torus(0.37, 0.025, 4, 18), 0x1a1a22, { p: [0, 0.55, 0], r: [Math.PI / 2 - 0.25, 0, 0] });
+      rig.add('head', box(0.5, 0.16, 0.2), 0x1a1a22, { p: [0, 0.62, 0.24], r: [-0.45, 0, 0] });
+      rig.add('head', box(0.4, 0.04, 0.01), 0x4ad8ff, { p: [0, 0.66, 0.34], r: [-0.45, 0, 0] });
+      let clock = 0;
+      return {
+        eyeOpen: 1,
+        robotic: true,
+        update(dt, f) {
+          // robotic blink on a perfectly regular schedule
+          clock += dt;
+          f.blinkOverride = (clock % 2.0) < 0.09 ? 0.08 : null;
+          // head moves in quantised steps
+          const h = f.rig.j.head.rotation;
+          h.y = Math.round(h.y / 0.18) * 0.18; h.x = Math.round(h.x / 0.12) * 0.12;
+        },
+      };
+    },
+    hassabyte(rig) {
+      const SK = 0xd9a77e, COAT = 0xf2f2f0, SHIRT = 0x4a7ac8, TROUS = 0x2a2a36;
+      baseBody(rig, { skin: SK, shirt: COAT, pants: TROUS, shoes: 0x5a3a22 });
+      rig.add('torso', box(0.15, 0.22, 0.02), SHIRT, { p: [0, 0.33, 0.141] });
+      rig.add('torso', box(0.04, 0.18, 0.02), 0x2a2a50, { p: [0, 0.31, 0.146] });
+      rig.add('torso', box(0.08, 0.26, 0.02), 0xdcdcda, { p: [0.09, 0.3, 0.147], r: [0, 0, -0.3] }); // lapels
+      rig.add('torso', box(0.08, 0.26, 0.02), 0xdcdcda, { p: [-0.09, 0.3, 0.147], r: [0, 0, 0.3] });
+      rig.add('torso', box(0.02, 0.09, 0.02), 0x3a6ad8, { p: [0.15, 0.35, 0.15] });                  // pen
+      // lab-coat skirt rides on each thigh so kicks lift it naturally
+      rig.add('hipL', box(0.21, 0.38, 0.28), COAT, { p: [0, -0.14, 0] });
+      rig.add('hipR', box(0.21, 0.38, 0.28), COAT, { p: [0, -0.14, 0] });
+      hairCap(rig, 'head', 0x2a221c);
+      face(rig, { brow: 0x2a221c, browTilt: 0.02, mouthW: 0.12 });
+      return { eyeOpen: 0.75, mouthCurve: true, update() {} };
+    },
+    hwatt(rig) {
+      const SK = 0xe8c09a, LEATHER = 0x18181e, TEE = 0x26262c, JEANS = 0x1c1c24;
+      baseBody(rig, { skin: SK, shirt: LEATHER, shirtKind: 'gloss', pants: JEANS, shoes: 0x101010 });
+      rig.add('torso', box(0.13, 0.2, 0.02), TEE, { p: [0, 0.33, 0.142] });
+      rig.add('torso', box(0.13, 0.26, 0.05), LEATHER, { p: [0.1, 0.33, 0.15], r: [0, 0, -0.35] }, 'gloss'); // collar
+      rig.add('torso', box(0.13, 0.26, 0.05), LEATHER, { p: [-0.1, 0.33, 0.15], r: [0, 0, 0.35] }, 'gloss');
+      rig.add('torso', box(0.015, 0.34, 0.01), 0xc8c8d0, { p: [0.12, 0.18, 0.146] });                     // zipper
+      hairCap(rig, 'head', 0x5e5e66, { z: -0.06 });
+      rig.add('head', box(0.42, 0.09, 0.3), 0x8a8a92, { p: [0, 0.74, 0.02], r: [-0.25, 0, 0] });              // swept-back silver
+      face(rig, { brow: 0x3a3a40, browTilt: 0.05, mouthW: 0.17, mouthH: 0.05, teeth: true });
+      for (const sx of [1, -1]) {                                                                           // rectangular glasses
+        rig.add('head', box(0.14, 0.02, 0.02), 0x1a1a1a, { p: [sx * 0.12, 0.42, 0.34] });
+        rig.add('head', box(0.14, 0.02, 0.02), 0x1a1a1a, { p: [sx * 0.12, 0.33, 0.345] });
+        rig.add('head', box(0.02, 0.1, 0.02), 0x1a1a1a, { p: [sx * 0.19, 0.375, 0.335] });
+      }
+      rig.add('head', box(0.06, 0.02, 0.02), 0x1a1a1a, { p: [0, 0.4, 0.36] });
+      // the trophy chip, only shown in the victory pose
+      rig.pivot('chip', 'handR', [0, -0.05, 0.12]);
+      rig.add('chip', box(0.36, 0.04, 0.26), 0x2f8a3a, {});
+      rig.add('chip', box(0.16, 0.05, 0.12), 0x1a1a1a, { p: [0, 0.03, 0] });
+      rig.add('chip', box(0.08, 0.055, 0.06), 0x8ad03a, { p: [0, 0.035, 0] });
+      return { eyeOpen: 0.85, update(dt, f) { f.rig.j.chip.visible = f.mode === 'victory'; } };
+    },
+    oldman(rig) {
+      const SK = 0xf0c8a8, SWEATER = 0x6f8676, JEANS = 0x3a4a6a;
+      baseBody(rig, { skin: SK, shirt: SWEATER, pants: JEANS, shoes: 0xf0f0f0 });
+      rig.add('torso', cyl(0.13, 0.13, 0.05, 8), 0x5f7466, { p: [0, 0.44, 0] });                         // crew neck
+      rig.add('torso', box(0.46, 0.05, 0.3), 0x5f7466, { p: [0, 0.02, 0] });                             // ribbed hem
+      hairCap(rig, 'head', 0x7a5a3a);
+      for (let i = 0; i < 7; i++) rig.add('head', sph(0.1, 6, 5), 0x7a5a3a, { p: [-0.2 + i * 0.065, 0.66 - Math.abs(i - 3) * 0.015, 0.2 + (i % 2) * 0.04] }); // wavy fringe
+      face(rig, { brow: 0x5a4028, browTilt: -0.05, mouthW: 0.1, eyeScale: 1.25 });
+      return { eyeOpen: 1, update() {} };
+    },
+  };
+
+  /** Build a complete (posable) model for a fighter id. */
+  function build(id) {
+    const rig = createRig();
+    const extras = BUILDERS[id](rig);
+    rig.finish(mats);
+    return { rig, extras };
+  }
+
+  /* ---------- procedural poses (write into rig.target; the rig eases toward them) ---------- */
+  const seg = (p, a, b) => clamp((p - a) / (b - a), 0, 1);
+  const ease = (x) => x * x * (3 - 2 * x);
+  const blend = (rig, joint, x, y, z, k) => { const t = rig.target[joint]; t[0] = lerp(t[0], x, k); t[1] = lerp(t[1], y, k); t[2] = lerp(t[2], z, k); };
+
+  /** Bouncy fighting stance (orthodox: left side forward, fists up). */
+  function guard(rig, t) {
+    const b = Math.sin(t * 5.5);
+    rig.bodyPos[1] = -0.05 + b * 0.018;
+    rig.set('torso', 0.05, -0.25, 0);
+    rig.set('head', 0, 0.22, 0);
+    rig.set('hipL', -0.35, 0, 0.05); rig.set('kneeL', 0.45 + b * 0.04);
+    rig.set('hipR', 0.25, 0, -0.05); rig.set('kneeR', 0.4 + b * 0.04);
+    rig.set('shL', -0.95, 0, -0.15); rig.set('elL', -1.85);
+    rig.set('shR', -0.7, 0, 0.2); rig.set('elR', -2.05);
+  }
+  /** Relaxed standing pose (select screen, intro). */
+  function stand(rig, t) {
+    const b = Math.sin(t * 2);
+    rig.bodyPos[1] = b * 0.01;
+    rig.set('shL', 0.05, 0, 0.12 + b * 0.02); rig.set('elL', -0.2);
+    rig.set('shR', 0.05, 0, -0.12 - b * 0.02); rig.set('elR', -0.2);
+    rig.set('head', b * 0.03, 0, 0);
+    rig.set('kneeL', 0.05); rig.set('kneeR', 0.05);
+  }
+  /** Leg cycle layered over the current pose. amt 0..1. */
+  function walk(rig, ph, amt) {
+    const s = Math.sin(ph), c = Math.cos(ph);
+    blend(rig, 'hipL', s * 0.6 - 0.1, 0, 0.03, amt); blend(rig, 'kneeL', Math.max(0, -s) * 0.9 + 0.15, 0, 0, amt);
+    blend(rig, 'hipR', -s * 0.6 - 0.1, 0, -0.03, amt); blend(rig, 'kneeR', Math.max(0, s) * 0.9 + 0.15, 0, 0, amt);
+    rig.bodyPos[1] += Math.abs(c) * 0.05 * amt;
+    rig.target.torso[2] += s * 0.05 * amt;
+  }
+  /** Straight punch. p = progress 0..1, side 'R' (near arm, cross) or 'L' (lead jab). */
+  function punch(rig, p, side) {
+    const ext = ease(seg(p, 0.1, 0.3)) * (1 - ease(seg(p, 0.55, 1)));
+    const wind = seg(p, 0, 0.1) * (1 - seg(p, 0.1, 0.3));
+    if (side === 'R') {
+      blend(rig, 'shR', -1.62, 0, -0.12, ext); blend(rig, 'elR', -0.05, 0, 0, ext);
+      rig.target.shR[0] += wind * 0.4;
+      rig.target.torso[1] = lerp(-0.25, 0.45, ext);
+    } else {
+      blend(rig, 'shL', -1.62, 0, 0.12, ext); blend(rig, 'elL', -0.05, 0, 0, ext);
+      rig.target.shL[0] += wind * 0.4;
+      rig.target.torso[1] = lerp(-0.25, -0.7, ext);
+    }
+    rig.target.body[0] = 0.12 * ext;
+    rig.bodyPos[2] = 0.14 * ext;
+  }
+  /** Chambered front kick with the near (right) leg. */
+  function kick(rig, p) {
+    const ch = ease(seg(p, 0, 0.28)) * (1 - ease(seg(p, 0.7, 1)));
+    const ext = ease(seg(p, 0.26, 0.42)) * (1 - ease(seg(p, 0.6, 0.85)));
+    blend(rig, 'hipR', -1.2, 0, 0, ch); blend(rig, 'kneeR', 1.8, 0, 0, ch);
+    blend(rig, 'hipR', -1.65, 0, 0, ext); blend(rig, 'kneeR', 0.05, 0, 0, ext);
+    blend(rig, 'hipL', 0.1, 0, 0.05, ch); blend(rig, 'kneeL', 0.3, 0, 0, ch);
+    blend(rig, 'torso', -0.25, -0.55, 0, ch);
+    blend(rig, 'shL', -0.6, 0, 0.9, ch); blend(rig, 'shR', -0.4, 0, -0.9, ch);
+    rig.bodyPos[1] += 0.06 * ch;
+    rig.bodyPos[2] = 0.1 * ext;
+  }
+  /** Per-character victory poses. */
+  function victory(rig, t, id) {
+    const b = Math.sin(t * 4);
+    switch (id) {
+      case 'tromp': // double thumbs-up, smug sway
+        rig.set('shL', -1.35, 0, 0.35); rig.set('elL', -0.7); rig.set('shR', -1.35, 0, -0.35); rig.set('elR', -0.7);
+        rig.set('body', 0, 0, Math.sin(t * 2) * 0.06); rig.set('head', -0.15, 0, Math.sin(t * 2) * 0.1);
+        break;
+      case 'muskrat': // awkward little dance
+        rig.bodyPos[1] = Math.abs(b) * 0.08;
+        rig.set('shL', -0.4, 0, 0.6 + b * 0.5); rig.set('elL', -1.4); rig.set('shR', -0.4, 0, -0.6 + b * 0.5); rig.set('elR', -1.4);
+        rig.set('hips', 0, b * 0.3, 0); rig.set('head', 0, -b * 0.25, b * 0.1);
+        rig.set('kneeL', 0.3 + Math.max(0, b) * 0.4); rig.set('kneeR', 0.3 + Math.max(0, -b) * 0.4);
+        break;
+      case 'zuck': { // stiff robotic wave
+        const w = Math.round(Math.sin(t * 6)) * 0.4;
+        rig.set('shR', 0, 0, -2.6); rig.set('elR', 0, 0, w); rig.set('shL', 0, 0, 0.1);
+        rig.set('head', 0, Math.round(Math.sin(t * 1.5)) * 0.2, 0);
+        break;
+      }
+      case 'hassabyte': // calm "eureka" finger
+        rig.set('shR', -2.4, 0, 0.1); rig.set('elR', -0.6); rig.set('shL', -0.5, 0, -0.5); rig.set('elL', -1.7);
+        rig.set('head', -0.1, 0, 0.1 + b * 0.03);
+        break;
+      case 'hwatt': // holds the chip over his head
+        rig.bodyPos[1] = Math.abs(b) * 0.05;
+        rig.set('shR', -2.9, 0, 0.15); rig.set('elR', -0.3); rig.set('shL', -2.9, 0, -0.15); rig.set('elL', -0.3);
+        rig.set('head', -0.3, 0, 0);
+        break;
+      default: // oldman: small humble wave
+        rig.set('shR', -0.3, 0, -2.3); rig.set('elR', 0, 0, b * 0.5); rig.set('shL', -0.8, 0, -0.4); rig.set('elL', -1.2);
+        rig.set('head', 0, 0, b * 0.05);
+    }
+  }
+  /** Per-character defeat poses. */
+  function defeat(rig, t, id) {
+    const b = Math.sin(t * 3);
+    switch (id) {
+      case 'tromp': // arms crossed, pouting, head turned away
+        rig.set('shL', -0.55, 0, -0.55); rig.set('elL', -2.0); rig.set('shR', -0.6, 0, 0.55); rig.set('elR', -2.0);
+        rig.set('head', -0.15, 0.6, 0); rig.set('body', -0.05, 0, 0);
+        break;
+      case 'muskrat': // facepalm
+        rig.set('shR', -2.0, 0, 0.55); rig.set('elR', -2.3); rig.set('head', 0.35, 0, 0);
+        rig.set('shL', 0.1, 0, 0.2); rig.set('body', 0.1, 0, 0);
+        break;
+      case 'zuck': // buffering: sits down, stiff
+        rig.bodyPos[1] = -0.36; rig.set('hipL', -1.5); rig.set('kneeL', 1.5); rig.set('hipR', -1.5); rig.set('kneeR', 1.5);
+        rig.set('shL', -1.5); rig.set('shR', -1.5); rig.set('head', Math.round(b) * 0.15, 0, 0);
+        break;
+      case 'hassabyte': // chin-stroking contemplation
+        rig.set('shR', -1.1, 0, 0.45); rig.set('elR', -2.4); rig.set('shL', -0.7, 0, -0.5); rig.set('elL', -1.6);
+        rig.set('head', 0.1, 0, 0.15 + b * 0.05);
+        break;
+      case 'hwatt': // shrug
+        rig.set('shL', -0.3, 0, 0.9); rig.set('elL', -1.6); rig.set('shR', -0.3, 0, -0.9); rig.set('elR', -1.6);
+        rig.set('head', 0, 0, 0.2); rig.bodyPos[1] = Math.abs(b) * 0.02;
+        break;
+      default: // oldman: hands on head
+        rig.set('shL', -0.8, 0, 2.0); rig.set('elL', -2.2); rig.set('shR', -0.8, 0, -2.0); rig.set('elR', -2.2);
+        rig.set('head', 0.2, 0, b * 0.05);
+    }
+  }
+
+  /**
+   * Animate a model for a non-gameplay mode ('stand' | 'victory' | 'defeat' | 'guard').
+   * Shared by the select screen, VS, intro and results.
+   */
+  function animate(model, mode, t, dt, f = { t, vx: 0, mode, rig: model.rig }) {
+    const rig = model.rig;
+    rig.reset();
+    if (mode === 'victory') victory(rig, t, model.id);
+    else if (mode === 'defeat') defeat(rig, t, model.id);
+    else if (mode === 'guard') guard(rig, t);
+    else stand(rig, t);
+    finishPose(model, t, dt, f);
+  }
+  /** Apply the pose plus face (blink, expression) and secondary motion. */
+  function finishPose(model, t, dt, f) {
+    const { rig, extras } = model;
+    rig.apply(dt, 16);
+    model.blinkT = (model.blinkT ?? rand(1, 3)) - dt;
+    if (model.blinkT < -0.1) model.blinkT = rand(1.5, 4);
+    f.blinkOverride = null;
+    extras.update?.(dt, f);
+    let eye = model.blinkT < 0 ? 0.1 : extras.eyeOpen ?? 1;
+    if (f.blinkOverride != null) eye = f.blinkOverride;
+    if (f.mode === 'defeat') eye = Math.min(eye, 0.45);
+    rig.j.eyes.scale.y = eye;
+    const happy = f.mode === 'victory';
+    rig.j.mouth.scale.set(happy ? 1.4 : f.mode === 'defeat' ? 0.8 : 1, happy ? 1.8 : f.mode === 'defeat' ? 1.4 : 1, 1);
+    rig.j.mouth.rotation.z = extras.mouthTilt ?? 0;
+    rig.j.brows.position.y = 0.48 + (f.mode === 'defeat' ? 0.03 : f.attacking ? -0.025 : 0);
+  }
+
+  return { build, animate, finishPose, guard, walk, punch, kick, victory, defeat, stand, mats };
+})();
+
+/**
+ * The player-controlled fighter: movement on the X plane, attack timelines with a single
+ * active frame that asks Combat to resolve the hit, input buffering, and pose selection.
+ */
+class Fighter {
+  constructor(index) {
+    this.def = FIGHTERS[index];
+    this.model = FighterKit.build(this.def.id);
+    this.model.id = this.def.id;
+    this.rig = this.model.rig;
+    this.root = this.rig.root;
+    this.root.rotation.y = 1.1;                 // face the truck, turned 3/4 toward the camera
+    scene.add(this.root);
+    this.shadow = Shadows.track(this.rig.j.hips, 0.95, 0.7);
+    this.reset(CONFIG.FIGHTER_START_X);
+  }
+  reset(x) {
+    this.x = x; this.vx = 0; this.t = 0;
+    this.mode = 'idle'; this.modeT = 0; this.hitDone = false; this.queued = null; this.queuedT = 0;
+    this.side = 'L'; this.walkPh = 0; this.walkAmt = 0; this.specialCD = 0;
+    this.root.position.set(x, 0, 0);
+  }
+  get attacking() { return this.mode === 'punch' || this.mode === 'kick' || this.mode === 'special'; }
+  setMode(mode) { this.mode = mode; this.modeT = 0; }
+  startAttack(kind) {
+    this.mode = kind; this.modeT = 0; this.hitDone = false;
+    if (kind === 'punch') this.side = this.side === 'L' ? 'R' : 'L';
+    this.model.extras.onAttack?.();
+  }
+  /** World position of the striking limb (for particles). */
+  strikePoint(out) {
+    const j = this.rig.j;
+    return (this.mode === 'kick' ? j.kneeR : this.side === 'R' ? j.handR : j.handL).getWorldPosition(out);
+  }
+  /** One sim tick. `control` = player input is live. */
+  update(dt, control) {
+    this.t += dt;
+    this.modeT += dt;
+    this.specialCD = Math.max(0, this.specialCD - dt);
+    const wantPunch = control && Input.wasPressed('punch');
+    const wantKick = control && Input.wasPressed('kick');
+    if (wantPunch || wantKick) { this.queued = wantKick ? 'kick' : 'punch'; this.queuedT = 0.2; }
+    this.queuedT -= dt;
+    if (this.queuedT <= 0) this.queued = null;
+
+    let move = 0;
+    if (this.attacking) {
+      const A = this.mode === 'kick' ? CONFIG.KICK : CONFIG.PUNCH;
+      if (!this.hitDone && this.modeT >= A.dur * A.hitAt) {
+        this.hitDone = true;
+        Combat.strike(this, this.mode, A);
+      }
+      if (this.modeT >= A.dur) this.mode = 'idle';
+    } else if (this.mode === 'idle' && control) {
+      if (this.queued) { this.startAttack(this.queued); this.queued = null; }
+      else move = (Input.isDown('right') ? 1 : 0) - (Input.isDown('left') ? 1 : 0);
+    }
+    // movement on the fight plane; the truck's nose is a wall
+    const target = move * CONFIG.WALK_SPEED;
+    this.vx = damp(this.vx, target, 18, dt);
+    this.x += this.vx * dt;
+    const wall = Truck.destroyed ? Truck.backX() + 2 : Truck.frontX() - CONFIG.BODY_R;
+    this.x = clamp(this.x, CONFIG.ARENA_MIN_X, wall);
+    this.root.position.x = this.x;
+    this.walkPh += this.vx * dt * 4.2;
+    this.walkAmt = damp(this.walkAmt, Math.min(1, Math.abs(this.vx) / CONFIG.WALK_SPEED * 1.5), 12, dt);
+    this.animate(dt);
+  }
+  animate(dt) {
+    const rig = this.rig, K = FighterKit;
+    rig.reset();
+    const f = { t: this.t, vx: this.vx, mode: this.mode, rig, attacking: this.attacking };
+    if (this.mode === 'victory') K.victory(rig, this.modeT, this.def.id);
+    else if (this.mode === 'defeat') K.defeat(rig, this.modeT, this.def.id);
+    else if (this.mode === 'stand') K.stand(rig, this.t);
+    else {
+      K.guard(rig, this.t);
+      if (this.walkAmt > 0.01) K.walk(rig, this.walkPh, this.walkAmt);
+      if (this.mode === 'punch') K.punch(rig, this.modeT / CONFIG.PUNCH.dur, this.side);
+      if (this.mode === 'kick') K.kick(rig, this.modeT / CONFIG.KICK.dur);
+    }
+    K.finishPose(this.model, this.t, dt, f);
+  }
+  dispose() {
+    Shadows.untrack(this.shadow);
+    this.rig.dispose();
+  }
+}
+
+/* =====================================================================================
+ * 7. COMBAT — 1D hitbox/hurtbox ranges on the fight plane, damage, knockback, reactions,
+ *    scoring, and the H debug overlay that draws the ranges.
+ * ===================================================================================== */
+const Combat = (() => {
+  const stats = { hits: 0, score: 0, damage: 0, lastHitT: 0 };
+  // Debug overlay: translucent strips on the fight plane (hidden unless H is pressed).
+  const dbgMat = (c) => new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.35, depthTest: false, fog: false });
+  const strip = (c) => { const m = new THREE.Mesh(box(1, 1, 0.06), dbgMat(c)); m.renderOrder = 50; m.visible = false; scene.add(m); return m; };
+  const dbg = { on: false, hurt: strip(0x3a8aff), hit: strip(0xff3a3a), truck: strip(0x3aff6a) };
+  const place = (m, x0, x1, y0, y1) => { m.position.set((x0 + x1) / 2, (y0 + y1) / 2, 0.9); m.scale.set(Math.max(0.02, x1 - x0), y1 - y0, 1); };
+
+  return {
+    stats,
+    reset() { stats.hits = stats.score = stats.damage = 0; },
+    /** Is the truck's nose within `reach` of the fighter? (hitbox [x, x+reach] vs hurtbox [front, back]) */
+    inRange(f, reach) { return !Truck.destroyed && f.x + reach >= Truck.frontX() - 0.05 && f.x <= Truck.backX(); },
+    /** Resolve an attack's active frame. A = { dmg, power, reach, y }. Returns damage dealt. */
+    strike(f, kind, A) {
+      const p = f.strikePoint(_v2);
+      if (!this.inRange(f, A.reach)) {
+        FX.burst('puff', p, 2, { scale: 0.6 });         // whiff
+        return 0;
+      }
+      const dealt = Truck.hit({ dmg: A.dmg, power: A.power, y: A.y ?? p.y });
+      if (!dealt) return 0;
+      stats.hits++;
+      stats.damage += dealt;
+      stats.score += Math.round(dealt * 10);
+      stats.lastHitT = performance.now();
+      // impact feedback
+      _v3.set(Truck.frontX() + 0.05, clamp(p.y, 0.7, 1.6), 0.35);
+      FX.burst('chip', _v3, 2 + Math.round(A.power * 2), { dir: _v1.set(-1.5, 1, 0.5) });
+      FX.burst('spark', _v3, 4 + Math.round(A.power * 3));
+      f.vx -= 1.2 * A.power;                              // recoil
+      // the audience
+      if (A.power >= 1.5 && Math.random() < 0.5) Salesman.react('cover', 1.1);
+      else Salesman.react('wince', 0.55);
+      Stage.Crowd.excite(0.1 * A.power);
+      return dealt;
+    },
+    toggleDebug() { dbg.on = !dbg.on; for (const k of ['hurt', 'hit', 'truck']) dbg[k].visible = dbg.on; },
+    /** Update the hitbox overlay for the current fighter. */
+    updateDebug(f) {
+      if (!dbg.on || !f) return;
+      place(dbg.hurt, f.x - CONFIG.BODY_R, f.x + CONFIG.BODY_R, 0, 1.7);
+      const A = f.mode === 'kick' ? CONFIG.KICK : CONFIG.PUNCH;
+      place(dbg.hit, f.x, f.x + A.reach, f.mode === 'kick' ? 0.3 : 0.8, f.mode === 'kick' ? 1.0 : 1.3);
+      dbg.hit.material.opacity = f.attacking ? 0.6 : 0.18;
+      if (Truck.destroyed) dbg.truck.visible = false;
+      else { dbg.truck.visible = true; place(dbg.truck, Truck.frontX(), Truck.backX(), 0, 2.1); }
+    },
+    hideDebug() { for (const k of ['hurt', 'hit', 'truck']) dbg[k].visible = false; },
+  };
+})();
+
+/* =====================================================================================
  * 8. FX / JUICE — instanced particle pools (debris, glow, smoke).
  *    Three InstancedMeshes cover every particle in the game: 3 draw calls total.
  * ===================================================================================== */
@@ -1722,7 +2250,7 @@ const States = {
     },
   },
   select: {
-    enter() { Game.stateTime = 0; },
+    enter() { Game.fighter?.dispose(); Game.fighter = null; },
     update() {
       if (Input.wasPressed('left')) Game.fighterIndex = (Game.fighterIndex + FIGHTERS.length - 1) % FIGHTERS.length;
       if (Input.wasPressed('right')) Game.fighterIndex = (Game.fighterIndex + 1) % FIGHTERS.length;
@@ -1751,17 +2279,55 @@ const States = {
     },
   },
   fight: {
-    enter() { Game.stateTime = 0; this.timer = CONFIG.FIGHT_TIME; Truck.reset(); FX.clear(); },
-    update(dt) {
-      this.timer = Math.max(0, this.timer - dt);
-      if (this.timer <= 0) this.finish();
+    enter() {
+      this.timer = CONFIG.FIGHT_TIME; this.phase = 'play'; this.endT = 0; this.win = false;
+      Truck.reset(); FX.clear(); Combat.reset(); Salesman.reset(); Stage.Crowd.calm();
+      Game.fighter?.dispose();
+      Game.fighter = new Fighter(Game.fighterIndex);
+      CamRig.speed = 3;
+      CamRig.to(-1, 2.3, 14.5, -1, 1.6, 0, true);
     },
-    finish() { Game.lastResult = { win: false, timeLeft: this.timer }; setState('results'); },
-    frame() { CamRig.to(0.5, 2.5, 17, 0.5, 1.85, 0, true); },
+    exit() { Combat.hideDebug(); },
+    update(dt) {
+      const f = Game.fighter;
+      if (Input.wasPressed('debug')) Combat.toggleDebug();
+      if (this.phase === 'play') {
+        this.timer = Math.max(0, this.timer - dt);
+        f.update(dt, true);
+        if (Truck.destroyed) this.end(true);
+        else if (this.timer <= 0) this.end(false);
+      } else {
+        f.update(dt, false);
+        this.endT += dt;
+        if (this.endT > 3.5) this.finish();
+      }
+      Combat.updateDebug(f);
+    },
+    /** The round is decided: truck wrecked (win) or time up (lose). */
+    end(win) {
+      this.phase = 'end'; this.win = win; this.endT = 0;
+      Game.fighter.setMode(win ? 'victory' : 'defeat');
+      Salesman.react(win ? 'faint' : 'celebrate');
+      Stage.Crowd.excite(win ? 1 : 0.3);
+    },
+    finish() {
+      Game.lastResult = { win: this.win, timeLeft: this.timer, hits: Combat.stats.hits, score: Combat.stats.score };
+      setState('results');
+    },
+    frame() {
+      // gently track the midpoint between the fighter and the truck
+      const fx = Game.fighter ? Game.fighter.x : 0;
+      const tx = Truck.destroyed ? Truck.root.position.x : Truck.frontX();
+      const cx = clamp((fx + tx) / 2 + 0.4, -4.5, 3);
+      CamRig.to(cx, 2.3, 14.5, cx, 1.6, 0);
+    },
     hud(ctx) {
       PixelFont.draw(ctx, String(Math.ceil(this.timer)), 240, 10, { scale: 4, align: 'center' });
       PixelFont.draw(ctx, 'CYBERCHUNK', 470, 8, { align: 'right', color: '#fff36b' });
       drawBar(ctx, 270, 18, 200, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
+      PixelFont.draw(ctx, FIGHTERS[Game.fighterIndex].name, 10, 8, { color: FIGHTERS[Game.fighterIndex].color });
+      PixelFont.draw(ctx, String(Combat.stats.score).padStart(7, '0'), 10, 20, { scale: 2 });
+      if (this.phase === 'end') PixelFont.draw(ctx, this.win ? 'WRECKED!' : 'TIME UP!', 240, 110, { scale: 5, align: 'center', color: ['#fff36b', '#ff3c6e'], outline: 2 });
     },
   },
   results: {
@@ -1772,7 +2338,9 @@ const States = {
     },
     frame() { CamRig.to(4.5, 2.4, 9, 6.5, 1.3, -1, true); },
     hud(ctx) {
-      PixelFont.draw(ctx, 'RESULTS', 240, 40, { scale: 4, align: 'center', color: '#fff36b' });
+      const r = Game.lastResult || { win: false, score: 0, hits: 0, timeLeft: 0 };
+      PixelFont.draw(ctx, r.win ? 'PERFECT!' : 'SALE CANCELLED', 240, 30, { scale: 4, align: 'center', color: ['#fff36b', '#ff3c6e'] });
+      PixelFont.draw(ctx, `SCORE ${r.score}   HITS ${r.hits}   TIME ${Math.ceil(r.timeLeft)}`, 240, 80, { scale: 1, align: 'center' });
       PixelFont.draw(ctx, 'RETRY', 240, 170, { scale: 2, align: 'center', color: this.choice === 0 ? '#ff3c6e' : '#fff' });
       PixelFont.draw(ctx, 'CHANGE FIGHTER', 240, 194, { scale: 2, align: 'center', color: this.choice === 1 ? '#ff3c6e' : '#fff' });
     },
@@ -1797,6 +2365,7 @@ const perf = { fps: 60, frames: 0, acc: 0 };
 function simulate(dt) {
   Game.stateTime += dt;
   Stage.update(dt);
+  for (const m of Game.lineup || []) FighterKit.animate(m, Game.lineupMode, Stage.time, dt);
   Truck.update(dt);
   FX.update(dt);
   Game.state.update?.(dt);
@@ -1835,10 +2404,22 @@ window.CS = {
   info: () => ({
     state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
     truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
+    fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, phase: States.fight.phase,
+    hits: Combat.stats.hits, score: Combat.stats.score,
   }),
   debug: {
     endFight: () => Game.stateName === 'fight' && States.fight.finish(),
     hitTruck: (dmg = 30, power = 1) => Truck.hit({ dmg, power, y: 1.1 }),
+    /** Show every fighter side by side in a pose (for eyeballing the models). */
+    lineup(mode = 'stand') {
+      for (const m of Game.lineup || []) m.rig.dispose();
+      Game.lineup = FIGHTERS.map((d, i) => {
+        const m = FighterKit.build(d.id); m.id = d.id;
+        m.rig.root.position.set(-5 + i * 1.5, 0, 3); scene.add(m.rig.root);
+        return m;
+      });
+      Game.lineupMode = mode;
+    },
     /** Pin the camera: cam(px, py, pz, lx, ly, lz) — call with no args to release. */
     cam: (...a) => { Game.camOverride = a.length ? a : null; },
   },

@@ -138,6 +138,30 @@ async function main() {
   await sleep(1500);
   await shot('fight');
 
+  // Real input: walk to the truck, punch and kick it.
+  if (await page.evaluate(() => CS.info().fighterX !== null && CS.info().fighterX !== undefined)) {
+    await waitFor(() => CS.info().phase === 'play', 15000, 'play phase');
+    const x0 = (await page.evaluate(() => CS.info())).fighterX;
+    await page.keyboard.down('ArrowRight'); await sleep(1600); await page.keyboard.up('ArrowRight');
+    const x1 = (await page.evaluate(() => CS.info())).fighterX;
+    if (!(x1 > x0 + 1)) problems.push(`fighter did not walk right (${x0} -> ${x1})`);
+    for (let i = 0; i < 6; i++) { await press('KeyJ'); await sleep(200); }
+    await press('KeyK'); await sleep(260);
+    await shot('combat-kick');
+    for (let i = 0; i < 3; i++) { await press('KeyK'); await sleep(450); }
+    const info = await page.evaluate(() => CS.info());
+    if (!(info.hits >= 4 && info.truckHP < 1000)) problems.push(`attacks did not land (hits ${info.hits}, truck ${info.truckHP})`);
+    // walking away and punching must whiff (range check)
+    await page.keyboard.down('ArrowLeft'); await sleep(1200); await page.keyboard.up('ArrowLeft');
+    const before = (await page.evaluate(() => CS.info())).hits;
+    for (let i = 0; i < 3; i++) { await press('KeyJ'); await sleep(250); }
+    const after = (await page.evaluate(() => CS.info())).hits;
+    if (after !== before) problems.push(`out-of-range punches registered (${before} -> ${after})`);
+    await press('KeyH'); await sleep(300);
+    await shot('hitbox-debug');
+    await press('KeyH');
+  }
+
   // Truck damage stages (debug hits, independent of the fighter).
   if (await page.evaluate(() => !!window.CS.debug.hitTruck)) {
     await page.evaluate(() => CS.debug.cam(0.5, 2.2, 11, 1.8, 1.2, 0));
