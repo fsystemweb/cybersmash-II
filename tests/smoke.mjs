@@ -123,6 +123,20 @@ async function main() {
   // ---- select ----
   await press('Enter');
   await waitState('select');
+  // audio starts on the first key press; M toggles mute and back
+  const a0 = await page.evaluate(() => CS.info());
+  if (a0.audio !== 'running') problems.push(`AudioContext not running after first input (state: ${a0.audio})`);
+  await press('KeyM');
+  await sleep(150);
+  if (!(await page.evaluate(() => CS.info().muted))) problems.push('M did not mute');
+  await shot('muted');
+  await press('KeyM');
+  await sleep(150);
+  if (await page.evaluate(() => CS.info().muted)) problems.push('M did not unmute');
+  for (const name of ['punch', 'metal', 'glass', 'crash', 'jingle', 'trombone']) {
+    const lvl = await page.evaluate((n) => CS.debug.sfx(n), name);
+    if (!(lvl > 0.01)) problems.push(`sound "${name}" produced no signal (peak ${lvl})`);
+  }
   await sleep(1500);
   await press('ArrowRight');
   await sleep(500);

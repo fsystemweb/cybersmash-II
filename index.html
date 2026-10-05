@@ -102,6 +102,7 @@ for (const [action, codes] of Object.entries(KEYMAP)) for (const c of codes) (CO
 addEventListener('keydown', (e) => {
   const actions = CODE_TO_ACTION[e.code];
   if (actions) e.preventDefault();
+  Sound.unlock();               // the AudioContext starts on the first user input
   if (e.repeat) return;
   Input.held.add(e.code);
   if (actions) for (const a of actions) Input.press(a);
@@ -1082,6 +1083,7 @@ const Salesman = (() => {
     react(mood, dur = 1) {
       if (this.mood === 'faint' || (this.mood === 'celebrate' && mood !== 'idle')) return;
       if (this.mood === 'cover' && mood === 'wince' && this.moodT < this.moodDur) return;
+      if (mood !== this.mood) Sound.play(mood === 'cover' ? 'eep' : mood === 'faint' ? 'slide' : mood === 'celebrate' ? 'laugh' : 'none');
       this.mood = mood; this.moodT = 0; this.moodDur = dur;
       if (mood === 'wince' || mood === 'cover') this.sweat(4);
       this.nervous = clamp(this.nervous + 0.08, 0, 1);
@@ -1489,6 +1491,7 @@ const Truck = (() => {
       if (!this.cracked) {
         this.cracked = true;
         glass.map = glassCracked;
+        Sound.play('glass');
         FX.burst('glass', _v3.set(hx + 0.9, 1.6, 0.6), 10);
       }
       // stage 2: dents
@@ -1555,11 +1558,12 @@ const Truck = (() => {
       p.mesh.getWorldPosition(_v3);
       if (p.glass) {                       // glass doesn't fly as a sheet, it shatters
         p.mesh.visible = false;
+        if (!this.destroyed) Sound.play('glass');
         FX.burst('glass', _v3, 18);
         return;
       }
       scene.attach(p.mesh);
-      if (!this.destroyed) { Juice.shake(0.35); ComicText.pop('recall', _v3, 1.15); }
+      if (!this.destroyed) { Juice.shake(0.35); ComicText.pop('recall', _v3, 1.15); Sound.play('clang'); }
       FX.burst('shard', _v3, 5);
       const n = _v1.copy(p.normal).applyQuaternion(root.quaternion);
       const v = new THREE.Vector3(n.x * rand(2, 3.5) + rand(1, 3), rand(4, 7), n.z * rand(2, 3.5) + rand(-0.5, 1.5)).multiplyScalar(strength);
@@ -1571,6 +1575,7 @@ const Truck = (() => {
     destroy() {
       this.destroyed = true;
       this.collapseT = 0;
+      Sound.play('crash');
       this.collapseTilt = rand(-0.12, 0.12);
       for (const p of panels) if (!p.loose) this.detach(p, 0.55);
       wheels.forEach((w, i) => {
@@ -1621,6 +1626,7 @@ const Truck = (() => {
           this.sparkT = rand(0.25, 0.9);
           battery.getWorldPosition(_v3); _v3.x += 1.0; _v3.y += 0.45; _v3.z += 0.55;
           FX.burst('spark', _v3, 8);
+          Sound.play('spark');
         }
       } else {
         body.position.y = this.bounce * 0.12 + this.extLift * 0.55;
@@ -2197,6 +2203,7 @@ const Specials = (() => {
           const top = 1.95;
           if (sp.y <= top) {
             sp.y = top; sp.slammed = true;
+            Sound.play('stamp');
             hit(f, DMG, 3, 99);
             this.decal();
             _v3.set(sp.x, 0.3, 0.6);
@@ -2248,6 +2255,7 @@ const Specials = (() => {
         if (t >= 1.25 && !sp.sorry) {
           sp.sorry = true;
           f.rig.j.gun.visible = false;
+          Sound.play('oops');
           say(f, pick(['OOPS. SORRY, INVESTORS!', 'WAIT... THAT WAS MY TRUCK.', 'NOT A FLAMETHROWER! LEGALLY.', 'SORRY! RECALL INCOMING!']), 1.4);
         }
       },
@@ -2276,7 +2284,7 @@ const Specials = (() => {
         if (t >= 0.74 && !sp.slam) {
           sp.slam = true;
           Truck.extLift = 0;
-          if (sp.grab) { Truck.bounceV -= 6; hit(f, DMG, 3, 1.3); _v3.set(Truck.frontX() + 1, 0.2, 0.8); FX.burst('puff', _v3, 14, { scale: 1.6 }); }
+          if (sp.grab) { Sound.play('stamp'); Truck.bounceV -= 6; hit(f, DMG, 3, 1.3); _v3.set(Truck.frontX() + 1, 0.2, 0.8); FX.burst('puff', _v3, 14, { scale: 1.6 }); }
         }
         if (t > 1.15 && metaverse) setMetaverse(false);
       },
@@ -2299,6 +2307,7 @@ const Specials = (() => {
         if (t >= 0.42 && t < 0.56) dash(f, 16, dt);
         if (t >= 0.56 && !sp.struck) {
           sp.struck = true;
+          Sound.play('ding');
           if (hit(f, DMG, 3, 1.2)) { _v3.set(Truck.frontX(), 1.2, 0.4); FX.burst('spark', _v3, 20, { scale: 1.4 }); }
         }
       },
@@ -2389,6 +2398,8 @@ const Specials = (() => {
         chat.position.set(f.x + 1.2, 2.9 + Math.sin(t * 6) * 0.05, 0.4);
         const word = 'B-O-O-M';
         const n = clamp(Math.floor((t - 0.2) / 0.1), 0, word.length);
+        if (n !== sp.typed) { sp.typed = n; if (n > 0 && word[n - 1] !== '-') Sound.play('key'); }
+        if (t > 0.95 && !sp.zap) { sp.zap = true; Sound.play('laser'); }
         drawChat(word.slice(0, n), t < 0.95 && Math.floor(t * 8) % 2 === 0);
         if (t > 0.95 && t < 1.5) {
           // the laser fires from the bubble's tail to the truck's nose
@@ -2455,7 +2466,9 @@ class Fighter {
     this.mode = kind; this.modeT = 0; this.hitDone = false;
     if (kind === 'punch') this.side = this.side === 'L' ? 'R' : 'L';
     this.model.extras.onAttack?.();
+    if (kind !== 'special') Sound.play(kind === 'kick' ? 'whooshKick' : 'whoosh');
     if (kind === 'special') {
+      Sound.play('sp' + this.def.id[0].toUpperCase() + this.def.id.slice(1));
       this.special = Specials.get(this.def.id);
       this.sp = {};
       this.special.start(this);
@@ -2567,8 +2580,11 @@ const Combat = (() => {
       stats.score += Math.round(dealt * 10);
       stats.combo = Stage.time - stats.lastHitT < 0.9 ? stats.combo + 1 : 1;   // chain hits for the combo counter
       stats.lastHitT = Stage.time;
-      // impact feedback: debris, hit-stop, shake, punch-zoom, comic text
+      // impact feedback: sound, debris, hit-stop, shake, punch-zoom, comic text
       const special = kind === 'special', heavy = A.power >= 1.5;
+      if (A.power >= 0.75) Sound.play(kind === 'kick' || A.power >= 2.5 ? 'kick' : 'punch');
+      Sound.play('metal', A.power);
+      if (A.power >= 2.5) Sound.play('cheer', 0.7);
       _v3.set(Truck.frontX() + 0.05, clamp(p.y, 0.7, 1.6), 0.35);
       FX.burst('chip', _v3, 2 + Math.round(A.power * 2), { dir: _v1.set(-1.5, 1, 0.5) });
       FX.burst('spark', _v3, 4 + Math.round(A.power * 3));
@@ -2976,6 +2992,167 @@ const Portraits = (() => {
 })();
 
 /* =====================================================================================
+ * 10. AUDIO — every sound is synthesised with the Web Audio API (oscillators, filtered
+ *     noise, envelopes). The context starts on the first user input (autoplay rules).
+ *     M toggles mute (remembered in localStorage when available).
+ * ===================================================================================== */
+const Sound = (() => {
+  const VOLUME = 0.55;
+  let ac = null, master = null, noiseBuf = null;
+  let muted = false;
+  try { muted = localStorage.getItem('cybersmash.muted') === '1'; } catch { /* storage unavailable */ }
+
+  /** Create / resume the AudioContext. Call from a user-input handler. */
+  function unlock() {
+    if (!ac) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ac = new AC();
+      const comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -16; comp.ratio.value = 5;
+      master = ac.createGain();
+      master.gain.value = muted ? 0 : VOLUME;
+      master.connect(comp); comp.connect(ac.destination);
+      noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    if (ac.state === 'suspended') ac.resume();
+  }
+  const N = (n) => 440 * Math.pow(2, (n - 69) / 12);   // MIDI note → Hz
+
+  /** One oscillator voice: pitch slide f0→f1, quick attack, exponential decay; opts: lp, vib, attack. */
+  function tone(type, f0, f1, dur, vol = 0.3, delay = 0, o = {}) {
+    const t = ac.currentTime + delay;
+    const osc = ac.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0, t);
+    if (f1 && f1 !== f0) osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    if (o.vib) {
+      const lfo = ac.createOscillator(), depth = ac.createGain();
+      lfo.frequency.value = o.vib; depth.gain.value = f0 * 0.025;
+      lfo.connect(depth); depth.connect(osc.frequency);
+      lfo.start(t); lfo.stop(t + dur + 0.05);
+    }
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + (o.attack ?? 0.005));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    let node = osc;
+    if (o.lp) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = o.lp; osc.connect(f); node = f; }
+    node.connect(g); g.connect(master);
+    osc.start(t); osc.stop(t + dur + 0.05);
+  }
+  /** Filtered white noise burst with a sweeping cutoff. */
+  function hiss(dur, vol, type = 'bandpass', f0 = 1000, f1 = f0, q = 1, delay = 0) {
+    const t = ac.currentTime + delay;
+    const src = ac.createBufferSource();
+    src.buffer = noiseBuf; src.loop = true;
+    const f = ac.createBiquadFilter();
+    f.type = type; f.Q.value = q;
+    f.frequency.setValueAtTime(f0, t);
+    if (f1 !== f0) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.05);
+  }
+  const seq = (type, notes, vol, o = {}) => {        // [[midi, start, dur], ...]
+    for (const [n, s, d] of notes) tone(type, N(n), null, d, vol, s, o);
+  };
+
+  const SFX = {
+    // --- combat ---
+    whoosh: () => hiss(0.14, 0.12, 'bandpass', 700, 2600, 1.5),
+    whooshKick: () => hiss(0.24, 0.16, 'bandpass', 380, 1800, 1.2),
+    punch: () => { tone('sine', 150, 50, 0.14, 0.75); hiss(0.06, 0.3, 'lowpass', 1600, 400); },
+    kick: () => { tone('sine', 115, 38, 0.22, 0.85); hiss(0.1, 0.35, 'lowpass', 1200, 300); },
+    metal: (p = 1) => {
+      const b = rand(0.85, 1.2), v = Math.min(1.4, 0.6 + p * 0.25);
+      for (const [f, a] of [[340, 0.13], [523, 0.1], [781, 0.08], [1180, 0.06]]) tone('square', f * b, f * b * 0.9, 0.16 + 0.08 * p, a * v, 0, { lp: 3500 });
+      hiss(0.16 + 0.06 * p, 0.22 * v, 'highpass', 2600, 1200, 0.7);
+    },
+    glass: () => {
+      hiss(0.5, 0.35, 'highpass', 5200, 2400, 0.5);
+      for (let i = 0; i < 8; i++) tone('sine', rand(2400, 6200), null, rand(0.05, 0.2), 0.07, rand(0, 0.3));
+    },
+    clang: () => { for (const f of [196, 311, 467, 733]) tone('triangle', f, f * 0.97, 0.75, 0.12); hiss(0.3, 0.22, 'bandpass', 1800, 700, 2); },
+    crash: () => {
+      tone('sine', 72, 26, 1.2, 0.9);
+      hiss(1.4, 0.55, 'lowpass', 4200, 140, 0.5);
+      for (let i = 0; i < 6; i++) { const f = rand(180, 600); tone('square', f, f * 0.8, 0.25, 0.07, i * 0.09 + rand(0, 0.05), { lp: 2500 }); }
+    },
+    spark: () => { for (let i = 0; i < 4; i++) hiss(0.03, 0.1, 'highpass', 6000, 6000, 1, rand(0, 0.15)); },
+    stamp: () => { tone('sine', 85, 28, 0.55, 1); hiss(0.3, 0.5, 'lowpass', 2600, 160); },
+    // --- UI / announcer stingers (all original) ---
+    blip: () => tone('square', 660, 990, 0.05, 0.12),
+    confirm: () => [72, 76, 79, 84].forEach((n, i) => tone('square', N(n), null, 0.09, 0.13, i * 0.05)),
+    slam: () => { tone('sine', 95, 32, 0.65, 0.9); hiss(0.45, 0.4, 'lowpass', 3200, 180); for (const n of [45, 52, 57]) tone('sawtooth', N(n), null, 0.7, 0.08, 0, { lp: 1300 }); },
+    announce: () => { for (const n of [57, 64]) tone('sawtooth', N(n), null, 0.6, 0.12, 0, { lp: 1700, vib: 6 }); },
+    haggle: () => { for (const n of [62, 69, 74]) tone('sawtooth', N(n), N(n) * 1.01, 0.8, 0.13, 0, { lp: 2500, vib: 7 }); hiss(0.3, 0.3, 'lowpass', 3200, 300); tone('sine', 125, 45, 0.45, 0.6); },
+    beep: () => tone('square', 988, null, 0.09, 0.16),
+    beepLast: () => tone('square', 1319, null, 0.45, 0.18),
+    tick: () => tone('square', 1760, null, 0.03, 0.05),
+    cheer: (k = 1) => {
+      hiss(1.7, 0.16 * k, 'bandpass', 900, 1300, 0.6);
+      for (let i = 0; i < 6; i++) { const f = rand(380, 640); tone('triangle', f, f * 1.6, rand(0.3, 0.6), 0.035 * k, rand(0, 0.7), { vib: 9 }); }
+    },
+    // PERFECT: a short original 8-bit fanfare (square lead over a triangle bass)
+    jingle: () => {
+      seq('square', [[72, 0, 0.1], [76, 0.1, 0.1], [79, 0.2, 0.1], [84, 0.3, 0.22], [83, 0.55, 0.1], [84, 0.65, 0.1], [88, 0.75, 0.6]], 0.11);
+      seq('square', [[64, 0.3, 0.2], [67, 0.75, 0.6]], 0.06);
+      seq('triangle', [[48, 0, 0.3], [55, 0.3, 0.4], [60, 0.75, 0.7]], 0.22);
+    },
+    // SALE CANCELLED: the sad trombone ("wah wah wah waaah")
+    trombone: () => {
+      [55, 54, 53, 52].forEach((n, i) => tone('sawtooth', N(n), i === 3 ? N(n) * 0.97 : N(n), i === 3 ? 1.2 : 0.42, 0.15, i * 0.46, { lp: 900, vib: i === 3 ? 5 : 0, attack: 0.05 }));
+    },
+    // --- salesman ---
+    none: () => {},
+    eep: () => tone('sine', 700, 1150, 0.12, 0.09),
+    slide: () => tone('sine', 1400, 250, 0.95, 0.16),                       // fainting slide whistle
+    laugh: () => { for (let i = 0; i < 4; i++) tone('sawtooth', 330 - i * 16, 290 - i * 16, 0.12, 0.1, i * 0.16, { lp: 1500 }); },
+    // --- special-move stingers ---
+    spTromp: () => [60, 67].forEach((n, i) => tone('sawtooth', N(n), null, 0.26, 0.14, i * 0.15, { lp: 2100 })),
+    spMuskrat: () => { hiss(1.05, 0.34, 'lowpass', 450, 950, 0.8, 0.25); hiss(1.05, 0.13, 'bandpass', 2200, 1400, 2, 0.25); },
+    oops: () => tone('sine', 520, 380, 0.25, 0.12),
+    spZuck: () => { for (let i = 0; i < 10; i++) tone('square', 220 + Math.round(Math.random() * 8) * 110, null, 0.05, 0.07, i * 0.045); tone('sine', 880, 1760, 0.3, 0.09, 0.5); },
+    spHassabyte: () => { tone('sine', 420, 70, 0.9, 0.3); for (let i = 0; i < 6; i++) tone('square', 1200 + i * 160, null, 0.04, 0.05, 0.25 + i * 0.12); },
+    ding: () => { tone('sine', 1568, null, 0.6, 0.2); tone('sine', 2349, null, 0.5, 0.07); },
+    spHwatt: () => { tone('sawtooth', 140, 1500, 0.45, 0.1, 0, { lp: 3200 }); hiss(0.4, 0.12, 'bandpass', 700, 4200, 2); },
+    key: () => tone('square', rand(1500, 1900), null, 0.025, 0.07),
+    laser: () => { tone('square', 1900, 280, 0.55, 0.11, 0, { lp: 4200 }); tone('sawtooth', 110, 104, 0.6, 0.12, 0, { lp: 650 }); },
+  };
+
+  return {
+    unlock,
+    get muted() { return muted; },
+    get state() { return ac ? ac.state : 'none'; },
+    toggle() {
+      muted = !muted;
+      if (master) master.gain.setTargetAtTime(muted ? 0 : VOLUME, ac.currentTime, 0.02);
+      try { localStorage.setItem('cybersmash.muted', muted ? '1' : '0'); } catch { /* storage unavailable */ }
+    },
+    /** Peak output level right now (debug / tests): taps the master bus with an analyser. */
+    level() {
+      if (!ac) return 0;
+      if (!this.analyser) { this.analyser = ac.createAnalyser(); this.analyser.fftSize = 2048; master.connect(this.analyser); }
+      const buf = new Float32Array(this.analyser.fftSize);
+      this.analyser.getFloatTimeDomainData(buf);
+      return buf.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+    },
+    /** Fire a named sound effect (silently skipped until audio is unlocked, or when muted). */
+    play(name, ...args) {
+      if (!ac || ac.state !== 'running' || muted) return;
+      SFX[name](...args);
+    },
+  };
+})();
+addEventListener('pointerdown', () => Sound.unlock());
+
+/* =====================================================================================
  * 11. STATES — title → select → vs → fight → results, plus the fixed-timestep main loop.
  * ===================================================================================== */
 const Game = {
@@ -3004,7 +3181,7 @@ const CONDITION_COL = ['#7dff9a', '#c8f060', '#ffd23a', '#ff8a3a', '#ff3a4a'];
 const States = {
   title: {
     enter() { Game.view = 'harbor'; Truck.reset(); Salesman.reset(); },
-    update() { if (Input.wasPressed('confirm')) setState('select'); },
+    update() { if (Input.wasPressed('confirm')) { Sound.play('confirm'); setState('select'); } },
     frame() {
       // slow cinematic sweep across the harbor
       const a = Math.sin(Stage.time * 0.12) * 0.75;
@@ -3054,9 +3231,9 @@ const States = {
         this.confirmT += dt;
         if (this.confirmT > 0.95) setState('vs');
       } else {
-        if (Input.wasPressed('left')) Game.fighterIndex = (Game.fighterIndex + n - 1) % n;
-        if (Input.wasPressed('right')) Game.fighterIndex = (Game.fighterIndex + 1) % n;
-        if (Input.wasPressed('confirm')) { this.confirmT = 0; Post.uniforms.uFlash.value = 0.7; }
+        if (Input.wasPressed('left')) { Game.fighterIndex = (Game.fighterIndex + n - 1) % n; Sound.play('blip'); }
+        if (Input.wasPressed('right')) { Game.fighterIndex = (Game.fighterIndex + 1) % n; Sound.play('blip'); }
+        if (Input.wasPressed('confirm')) { this.confirmT = 0; Post.uniforms.uFlash.value = 0.7; Sound.play('confirm'); }
         if (Input.wasPressed('back')) setState('title');
       }
       this.slots.forEach((s, i) => {
@@ -3115,7 +3292,7 @@ const States = {
     },
     exit() { Post.uniforms.uTint.value.setScalar(1); Post.uniforms.uFlash.value = 0; },
     update() {
-      if (!this.slam && Game.stateTime > 0.38) { this.slam = true; Post.uniforms.uFlash.value = 0.85; }
+      if (!this.slam && Game.stateTime > 0.38) { this.slam = true; Post.uniforms.uFlash.value = 0.85; Sound.play('slam'); }
       if (Game.stateTime > this.DUR || (Game.stateTime > 0.5 && Input.wasPressed('confirm'))) setState('fight');
     },
     frame(dt) {
@@ -3202,14 +3379,17 @@ const States = {
           Salesman.react('idle', 0);
           f.setMode('idle');
           HUD.banner('SALE 1...', { dur: 1.15, scale: 6, y: 92 });
+          Sound.play('announce');
         });
-        this.at(1.25, 'haggle', () => HUD.banner('HAGGLE!', { dur: 0.9, scale: 8, y: 86, color: ['#ffffff', '#ffd23a', '#ff6a2a', '#ff2a4a'] }));
+        this.at(1.25, 'haggle', () => { HUD.banner('HAGGLE!', { dur: 0.9, scale: 8, y: 86, color: ['#ffffff', '#ffd23a', '#ff6a2a', '#ff2a4a'] }); Sound.play('haggle'); });
         f.update(dt, false);
         if (this.phaseT > 2.05) this.setPhase('play');
       } else if (this.phase === 'play') {
         if (Game.bot) this.botInput(f);
         // super-move freeze: the clock stops while a special plays out
         if (f.mode !== 'special') this.timer = Math.max(0, this.timer - dt);
+        const secs = Math.ceil(this.timer);
+        if (secs !== this.lastSec) { if (secs <= 5 && secs > 0) Sound.play('beep'); this.lastSec = secs; }
         f.update(dt, true);
         if (Truck.destroyed) this.finisher();
         else if (this.timer <= 0) this.end(false);
@@ -3243,8 +3423,10 @@ const States = {
       if (win) {
         this.bonus = Math.ceil(this.timer) * 1000;
         HUD.banner('PERFECT!', { dur: 3.2, scale: 8, y: 56 });
+        Sound.play('jingle'); Sound.play('cheer', 1.3);
       } else {
         HUD.banner('TIME UP!', { dur: 1.0, scale: 6, y: 80 });
+        Sound.play('beepLast');
       }
     },
     endSequence() {
@@ -3252,9 +3434,11 @@ const States = {
       const fAnchor = headAnchor(Game.fighter.rig, 0.95);
       if (this.win) {
         this.at(1.3, 'line', () => HUD.say('fighter', def.win, fAnchor, { dur: 3.4 }));
+        for (let i = 0; i < 12; i++) this.at(0.8 + i * 0.1, 'tick' + i, () => Sound.play('tick'));
       } else {
         this.at(1.0, 'cancel', () => {
           HUD.banner('SALE CANCELLED', { dur: 3.8, scale: 5, y: 196, color: ['#ffd0e0', '#ff6a8a', '#c02a5a', '#7a1a4a'] });
+          Sound.play('trombone');
           HUD.say('salesman', 'HA! STILL FOR SALE! ANY TAKERS?', headAnchor(Salesman.rig, 1.0), { dur: 2.2 });
         });
         this.at(2.4, 'line', () => HUD.say('fighter', def.lose, fAnchor, { dur: 2.8 }));
@@ -3392,8 +3576,8 @@ const States = {
       // the pedestal turns slowly, showing off the pose
       this.ped.rotation.y = this.model.rig.root.rotation.y = Game.stateTime * 0.6 - 0.4;
       FighterKit.animate(this.model, this.r.win ? 'victory' : 'defeat', Game.stateTime, dt);
-      if (Input.wasPressed('up') || Input.wasPressed('down')) this.choice ^= 1;
-      if (Game.stateTime > 0.6 && Input.wasPressed('confirm')) setState(this.choice === 0 ? 'fight' : 'select');
+      if (Input.wasPressed('up') || Input.wasPressed('down')) { this.choice ^= 1; Sound.play('blip'); }
+      if (Game.stateTime > 0.6 && Input.wasPressed('confirm')) { Sound.play('confirm'); setState(this.choice === 0 ? 'fight' : 'select'); }
       if (Input.wasPressed('back')) setState('select');
     },
     frame() { CamRig.to(0.3, 1.75, 7.6, 0.75, 1.15, 0, true); },
@@ -3431,6 +3615,19 @@ const States = {
   },
 };
 
+/** Small speaker status in the bottom-left: always when muted, briefly after toggling. */
+function drawSoundStatus(ctx, dt) {
+  Game.soundToast = Math.max(0, (Game.soundToast || 0) - dt);
+  if (!Sound.muted && Game.soundToast <= 0) return;
+  const x = 6, y = 258;
+  ctx.fillStyle = '#000'; ctx.fillRect(x - 1, y - 1, 10, 9);
+  ctx.fillStyle = Sound.muted ? '#ff5a6a' : '#7dff9a';
+  ctx.fillRect(x, y + 2, 3, 3); ctx.fillRect(x + 3, y + 1, 1, 5); ctx.fillRect(x + 4, y, 1, 7);   // speaker
+  if (Sound.muted) { ctx.fillRect(x + 6, y + 1, 1, 1); ctx.fillRect(x + 7, y + 2, 1, 1); ctx.fillRect(x + 6, y + 3, 1, 1); ctx.fillRect(x + 7, y + 4, 1, 1); ctx.fillRect(x + 6, y + 5, 1, 1); }
+  else { ctx.fillRect(x + 6, y + 2, 1, 3); ctx.fillRect(x + 8, y + 1, 1, 5); }
+  PixelFont.draw(ctx, Sound.muted ? 'SOUND OFF (M)' : 'SOUND ON (M)', x + 13, y, { color: Sound.muted ? '#ff8a9a' : '#b8ffc8' });
+}
+
 function setState(name) {
   const prev = Game.stateName;
   Game.state?.exit?.(name);
@@ -3448,6 +3645,7 @@ const perf = { fps: 60, frames: 0, acc: 0 };
 
 function simulate(dt) {
   Game.stateTime += dt;
+  if (Input.wasPressed('mute')) { Sound.toggle(); Game.soundToast = 1.5; }
   Stage.update(dt);
   Showroom.update(dt);
   for (const m of Game.lineup || []) FighterKit.animate(m, Game.lineupMode, Stage.time, dt);
@@ -3482,6 +3680,7 @@ function frame(now) {
 
   hud.clearRect(0, 0, CONFIG.LOW_W, CONFIG.LOW_H);
   Game.state.hud?.(hud);
+  drawSoundStatus(hud, realDt);
 
   perf.frames++; perf.acc += realDt;
   if (perf.acc >= 0.5) { perf.fps = perf.frames / perf.acc; perf.frames = 0; perf.acc = 0; }
@@ -3496,7 +3695,7 @@ window.CS = {
     truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
     fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, phase: States.fight.phase,
     modeT: Game.fighter ? +Game.fighter.modeT.toFixed(3) : 0, phaseT: +(States.fight.phaseT ?? 0).toFixed(3),
-    timer: +(States.fight.timer ?? 0).toFixed(2), hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best,
+    timer: +(States.fight.timer ?? 0).toFixed(2), audio: Sound.state, muted: Sound.muted, hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best,
     result: Game.lastResult,
   }),
   debug: {
@@ -3504,6 +3703,12 @@ window.CS = {
     hitTruck: (dmg = 30, power = 1) => Truck.hit({ dmg, power, y: 1.1 }),
     /** Let the in-page bot play (walks in, alternates punches and kicks). */
     bot: (on = true) => { Game.bot = on; if (!on) Input.virtual.clear(); },
+    /** Play a sound effect by name and report the peak level shortly after (tests). */
+    sfx: (name) => {
+      Sound.level(); Sound.play(name);
+      let peak = 0, n = 0;
+      return new Promise((r) => { const id = setInterval(() => { peak = Math.max(peak, Sound.level()); if (++n >= 20) { clearInterval(id); r(peak); } }, 10); });
+    },
     /** Freeze / resume the simulation (rendering keeps going). */
     pause: (on = true) => { Game.paused = on; },
     /** Jump straight into a round with fighter i (no intro). */
