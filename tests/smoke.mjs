@@ -257,6 +257,25 @@ async function main() {
   const info = await page.evaluate(() => window.CS.info && window.CS.info());
   if (info && info.calls > 150) problems.push(`draw calls ${info.calls} > 150 budget`);
 
+  // Mobile: touch buttons appear on a touch device and drive the menus.
+  const mobile = await browser.newContext({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+  const mp = await mobile.newPage();
+  mp.on('pageerror', (e) => problems.push(`mobile uncaught: ${e.message}`));
+  mp.on('console', (m) => { if (m.type() === 'error') problems.push(`mobile console.error: ${m.text()}`); });
+  await mp.goto(URL, { waitUntil: 'load' });
+  await mp.waitForFunction(() => window.CS && window.CS.ready, null, { timeout: 20000 });
+  if (await mp.evaluate(() => document.getElementById('touch').hidden)) problems.push('touch controls hidden on a touch device');
+  await mp.tap('[data-a=confirm]');
+  await mp.waitForFunction(() => CS.state === 'select', null, { timeout: 10000 }).catch(() => problems.push('tapping START did not open select'));
+  const i0 = await mp.evaluate(() => CS.info().fighterIndex);
+  await mp.tap('[data-a=right]');
+  await sleep(400);
+  if ((await mp.evaluate(() => CS.info().fighterIndex)) === i0) problems.push('tapping > did not change fighter');
+  await sleep(800);
+  await mp.screenshot({ path: path.join(OUT, `${String(++shotN).padStart(2, '0')}-mobile.png`) });
+  console.log('  shot mobile');
+  await mobile.close();
+
   await browser.close();
 }
 
