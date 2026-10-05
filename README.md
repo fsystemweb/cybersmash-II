@@ -69,9 +69,10 @@ All characters are affectionate parody caricatures with parody names. The jokes 
 
 ## Under the hood
 
-- **Rendering**: three.js `0.160.0`. The 3D scene renders into a **480×270 render target**, then a
-  fullscreen pass upscales it with nearest-neighbour sampling, an ordered-dither posterise, scanlines and a
-  vignette. Materials are 3-band **toon** shading with an injected hard rim light, and shadows are blob shadows.
+- **Rendering**: three.js `0.160.0`. The 3D scene renders into a **640×360 render target**, then a
+  fullscreen pass upscales it with nearest-neighbour sampling and adds **ink outlines** (edges found from
+  the depth buffer), a sunset **haze** that pushes the background back, an ordered-dither posterise,
+  scanlines and a vignette. Materials are 3-band **toon** shading with an injected hard rim light, and shadows are blob shadows.
   The 16:9 stage is letterboxed to any window, and devicePixelRatio is capped at 2.
 - **Gameplay**: 2.5D. Everything moves on one side-view plane (X) with 1D hitbox/hurtbox ranges, and the
   simulation runs on a fixed 60 Hz timestep (hit-stop and slow-mo scale it).

@@ -39,7 +39,7 @@
 <body>
 <div id="stage">
   <canvas id="gl"></canvas>
-  <canvas id="hud" width="480" height="270"></canvas>
+  <canvas id="hud" width="960" height="540"></canvas>
   <div id="touch" hidden>
     <button data-a="left">&lt;</button><button data-a="right">&gt;</button>
     <button data-a="punch">J</button><button data-a="kick">K</button><button data-a="special">L</button>
@@ -54,8 +54,11 @@ import * as THREE from 'three';
  * ===================================================================================== */
 const CONFIG = {
   ASPECT: 16 / 9,
-  LOW_W: 480,              // internal render / HUD resolution
+  LOW_W: 480,              // HUD layout space (the HUD canvas is drawn at 2x this)
   LOW_H: 270,
+  RENDER_W: 640,           // internal 3D render resolution (upscaled with hard pixels)
+  RENDER_H: 360,
+  HUD_SCALE: 2,
   MAX_DPR: 2,
   SIM_HZ: 60,              // fixed simulation rate
   MAX_FRAME_DT: 0.1,       // clamp huge frame gaps (tab switch)
@@ -274,22 +277,34 @@ const PixelFont = {
  * Chunky arcade health bar: black frame, red "recent damage" lag, yellow fill, tick marks.
  * `reverse` drains toward the right edge (for a bar on the right side of the screen).
  */
-function drawBar(ctx, x, y, w, h, frac, lag, reverse = false) {
+function drawBar(ctx, x, y, w, h, frac, lag, reverse = false, colors = ['#fff47a', '#ffc81e', '#e07a10']) {
+  // (the HUD canvas is drawn at 2x, so half-units are crisp single hi-res pixels)
   frac = clamp(frac, 0, 1); lag = clamp(lag, frac, 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(x - 1, y + 1, w + 4, h + 3);       // drop shadow
   ctx.fillStyle = '#000'; ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-  ctx.fillStyle = '#3a1230'; ctx.fillRect(x, y, w, h);
-  const seg = (f0, f1, col) => {
-    const a = Math.round(w * f0), b = Math.round(w * f1);
-    ctx.fillStyle = col;
+  ctx.fillStyle = '#c8b8ff'; ctx.fillRect(x - 1.5, y - 1.5, w + 3, 0.5);               // metal frame bevel
+  ctx.fillStyle = '#2a1a3a'; ctx.fillRect(x - 1.5, y + h + 1, w + 3, 0.5);
+  const well = ctx.createLinearGradient(0, y, 0, y + h);
+  well.addColorStop(0, '#1a0820'); well.addColorStop(1, '#3a1230');
+  ctx.fillStyle = well; ctx.fillRect(x, y, w, h);
+  const seg = (f0, f1, fill) => {
+    const a = w * f0, b = w * f1;
+    ctx.fillStyle = fill;
     if (reverse) ctx.fillRect(x + w - b, y, b - a, h); else ctx.fillRect(x + a, y, b - a, h);
   };
-  seg(frac, lag, '#ff2a4a');
-  seg(0, frac, '#ffd23a');
-  ctx.fillStyle = 'rgba(255,255,255,0.45)';
-  const fw = Math.round(w * frac);
-  ctx.fillRect(reverse ? x + w - fw : x, y + 1, fw, 2);          // glossy highlight
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  for (let i = 1; i < 10; i++) ctx.fillRect(x + Math.round((w * i) / 10), y, 1, h); // ticks
+  const lagG = ctx.createLinearGradient(0, y, 0, y + h);
+  lagG.addColorStop(0, '#ff8a9a'); lagG.addColorStop(0.5, '#ff2a4a'); lagG.addColorStop(1, '#a01030');
+  seg(frac, lag, lagG);
+  const g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, colors[0]); g.addColorStop(0.45, colors[1]); g.addColorStop(1, colors[2]);
+  seg(0, frac, g);
+  const fw = w * frac;
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillRect(reverse ? x + w - fw : x, y + 1, fw, 1);                                // glossy highlight
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(reverse ? x + w - fw : x, y + h - 1, fw, 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  for (let i = 1; i < 10; i++) ctx.fillRect(x + (w * i) / 10, y, 0.5, h);             // fine ticks
 }
 
 /* ---------- Canvas textures (every texture in the game is drawn at runtime) ---------- */
@@ -369,7 +384,7 @@ class GeoBatch {
 
 /* ---------- Materials: 3-band toon shading with a hard stepped rim light, cached for reuse ---------- */
 const Mat = (() => {
-  const gradient = new THREE.DataTexture(new Uint8Array([70, 160, 255]), 3, 1, THREE.RedFormat);
+  const gradient = new THREE.DataTexture(new Uint8Array([52, 140, 255]), 3, 1, THREE.RedFormat);
   gradient.minFilter = gradient.magFilter = THREE.NearestFilter;
   gradient.needsUpdate = true;
   // Shared by every toon material, so the whole scene's rim colour can be changed at once.
@@ -522,29 +537,39 @@ scene.fog = new THREE.Fog(0xe07a86, 70, 420);
 const camera = new THREE.PerspectiveCamera(CONFIG.CAMERA_FOV, CONFIG.ASPECT, 0.1, 700);
 
 // Lights: warm sunset key from the front-left, purple sky fill, and a hot back light for rims.
-const hemi = new THREE.HemisphereLight(0xffb98a, 0x4a2f6a, 1.25);
-const sun = new THREE.DirectionalLight(0xffe0b0, 2.1);
+const hemi = new THREE.HemisphereLight(0xffb98a, 0x4a2f6a, 1.0);
+const sun = new THREE.DirectionalLight(0xffe0b0, 2.5);
 sun.position.set(-7, 10, 9);
 const backLight = new THREE.DirectionalLight(0xff7a9a, 1.6);
 backLight.position.set(3, 5, -12);
 scene.add(hemi, sun, backLight);
 
-/* ---------- Retro pipeline: render at 480x270, then upscale with nearest-neighbour ---------- */
-// The target texture is sRGB so the 8-bit buffer keeps shadows smooth; the blit pass then
-// posterises with an ordered dither, adds faint scanlines, a vignette and a flash overlay.
-const lowRT = new THREE.WebGLRenderTarget(CONFIG.LOW_W, CONFIG.LOW_H, {
+/* ---------- Retro pipeline: render at 640x360, ink outlines, upscale with nearest-neighbour ---------- */
+// The colour target is sRGB so the 8-bit buffer keeps shadows smooth. A depth texture feeds an
+// outline pass: the Laplacian of 1/z is zero on any plane and spikes at silhouettes, so edges are
+// found without the floor or walls lighting up. Only the nearer side of an edge is inked (1 px
+// lines), and the ink fades with distance so characters and props pop against a softer backdrop.
+const lowRT = new THREE.WebGLRenderTarget(CONFIG.RENDER_W, CONFIG.RENDER_H, {
   minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false, depthBuffer: true,
 });
 lowRT.texture.colorSpace = THREE.SRGBColorSpace;
+lowRT.depthTexture = new THREE.DepthTexture(CONFIG.RENDER_W, CONFIG.RENDER_H, THREE.UnsignedIntType);
 
 const Post = {
   uniforms: {
     tDiffuse: { value: lowRT.texture },
-    uLowRes: { value: new THREE.Vector2(CONFIG.LOW_W, CONFIG.LOW_H) },
-    uLevels: { value: 28 },                       // colour steps per channel
+    tDepth: { value: lowRT.depthTexture },
+    uLowRes: { value: new THREE.Vector2(CONFIG.RENDER_W, CONFIG.RENDER_H) },
+    uNear: { value: 0.1 }, uFar: { value: 700 },
+    uOutline: { value: 0.92 },                    // ink strength (0 disables)
+    uHaze: { value: new THREE.Color(0xc86e8c) },  // sunset haze toward the background
+    uHazeAmt: { value: 0.5 },
+    uHazeNear: { value: 17 }, uHazeFar: { value: 110 },
+    uInk: { value: new THREE.Color(0x1a0a26) },
+    uLevels: { value: 40 },                       // colour steps per channel
     uFlash: { value: 0 },                         // 0..1 full-screen flash
     uFlashColor: { value: new THREE.Color(1, 1, 1) },
-    uVignette: { value: 0.55 },
+    uVignette: { value: 0.5 },
     uTint: { value: new THREE.Color(1, 1, 1) },   // multiplied in (used for darkening / mood)
   },
 };
@@ -555,23 +580,42 @@ blitScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMate
   depthTest: false, depthWrite: false,
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform vec2 uLowRes; uniform float uLevels;
+    #include <packing>
+    uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform vec2 uLowRes; uniform float uLevels;
+    uniform float uNear, uFar, uOutline; uniform vec3 uInk;
+    uniform vec3 uHaze; uniform float uHazeAmt, uHazeNear, uHazeFar;
     uniform float uFlash; uniform vec3 uFlashColor; uniform float uVignette; uniform vec3 uTint;
     varying vec2 vUv;
     float bayer2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
     float bayer4(vec2 a){ return bayer2(0.5 * a) * 0.25 + bayer2(a); }
+    // 1 / view distance: an affine function of screen position on any plane
+    float invZ(vec2 uv){ return -1.0 / perspectiveDepthToViewZ(texture2D(tDepth, uv).x, uNear, uFar); }
     void main(){
       vec2 px = floor(vUv * uLowRes);
       vec2 uv = (px + 0.5) / uLowRes;                         // snap to the low-res pixel centre
       vec4 c = linearToOutputTexel(texture2D(tDiffuse, uv));  // to sRGB for the retro maths
+      // --- ink outlines ---
+      vec2 o = 1.0 / uLowRes;
+      float zc = invZ(uv);
+      float zl = invZ(uv - vec2(o.x, 0.0)), zr = invZ(uv + vec2(o.x, 0.0));
+      float zd = invZ(uv - vec2(0.0, o.y)), zu = invZ(uv + vec2(0.0, o.y));
+      float lap = (abs(zl + zr - 2.0 * zc) + abs(zu + zd - 2.0 * zc)) / zc;
+      float nearer = step(0.25 * (zl + zr + zu + zd), zc);   // ink only the closer side of an edge
+      float edge = smoothstep(0.012, 0.04, lap) * nearer * (1.0 - smoothstep(24.0, 55.0, 1.0 / zc));
+      c.rgb = mix(c.rgb, uInk, edge * uOutline);
+      // --- aerial perspective: the backdrop melts into the sunset haze (sky is left alone) ---
+      float dist = 1.0 / zc;
+      float hz = smoothstep(uHazeNear, uHazeFar, dist) * step(dist, 500.0) * uHazeAmt;
+      float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+      c.rgb = mix(c.rgb, mix(vec3(lum), uHaze, 0.6), hz);
       c.rgb *= uTint;
       c.rgb = mix(c.rgb, uFlashColor, uFlash);
       vec2 d = vUv - 0.5;
       c.rgb *= 1.0 - uVignette * dot(d, d) * 1.6;
       float dith = bayer4(px) - 0.5;
-      c.rgb = floor(c.rgb * uLevels + 0.5 + dith * 0.9) / uLevels;
+      c.rgb = floor(c.rgb * uLevels + 0.5 + dith * 0.55) / uLevels;
       float row = fract(vUv.y * uLowRes.y);
-      c.rgb *= 1.0 - 0.07 * step(0.72, row);                   // faint scanline per low-res row
+      c.rgb *= 1.0 - 0.045 * step(0.72, row);                  // faint scanline per low-res row
       gl_FragColor = vec4(c.rgb, 1.0);
     }`,
 })));
@@ -942,9 +986,9 @@ const Stage = (() => {
     const heads = mk(sph(0.17, 8, 6), Mat.toon(0xffffff), N);
     const hats = mk(hatB.build(), vmat, N);
     const arms = mk(armGeo, Mat.toon(0xffffff), N * 2);
-    const VESTS = [0xff8a2a, 0xf2d22a, 0xff8a2a, 0x8ad03a, 0xf2d22a];
-    const SKINS = [0xf1c09a, 0xd89a6a, 0xa86a44, 0x7a4a30, 0xf6d0b0];
-    const HATS = [0xf2d22a, 0xffffff, 0xff8a2a, 0x3a7ad0];
+    const VESTS = [0xb8723a, 0xb09a48, 0xa8683a, 0x7a9050, 0xa89040];
+    const SKINS = [0xb89078, 0xa07860, 0x7a5644, 0x5a3e30, 0xc0a090];
+    const HATS = [0xc0a040, 0xc8c0c0, 0xc07038, 0x4a68a0];
     workers.forEach((w, i) => {
       bodies.setColorAt(i, _col.setHex(VESTS[i % VESTS.length]));
       heads.setColorAt(i, _col.setHex(SKINS[(i * 3) % SKINS.length]));
@@ -1359,7 +1403,7 @@ const Truck = (() => {
   const glassClean = glassTexture(false), glassCracked = glassTexture(true);
 
   /* ---------- materials (unique: they flash and swap maps) ---------- */
-  const steel = Mat.toon(0xa9b1bf, { vertexColors: true, unique: true, rim: 0.55, side: THREE.DoubleSide });
+  const steel = Mat.toon(0x9ea7b6, { vertexColors: true, unique: true, rim: 0.3, side: THREE.DoubleSide });
   const glass = Mat.toon(0xffffff, { vertexColors: true, unique: true, rim: 0.7, side: THREE.DoubleSide, map: glassClean });
   const darkMat = Mat.toon(0xffffff, { vertexColors: true, unique: true, rim: 0.3 });
   const lightsMat = Mat.basic(0xffffff, { vertexColors: true, unique: true });
@@ -1393,6 +1437,24 @@ const Truck = (() => {
 
   const panels = [];
   /**
+   * Base vertex shading so the angular facets read even under flat light: tops brightest,
+   * sides mid (darker toward the rocker), nose/tail darkest, and a soft darkening at every
+   * panel border that reads as a panel gap / bevel.
+   */
+  function paintPanel(p) {
+    const col = p.mesh.geometry.attributes.color, n = p.normal;
+    let shade = p.glass ? 1 : n.y > 0.55 ? 1.0 : Math.abs(n.x) > 0.6 ? 0.66 : Math.abs(n.z) > 0.8 ? 0.84 : 0.92;
+    for (let j = 0, i = 0; j <= p.sv; j++) for (let k = 0; k <= p.su; k++, i++) {
+      let v = shade;
+      if (!p.glass) {
+        if (Math.abs(n.z) > 0.8) v *= lerp(0.8, 1.04, clamp((p.home.y + p.base[i * 3 + 1] - BOT) / (BELT - BOT), 0, 1));
+        if (j === 0 || k === 0 || j === p.sv || k === p.su) v *= 0.82;
+      }
+      col.setXYZ(i, v, v, v * 1.02);
+    }
+    col.needsUpdate = true;
+  }
+  /**
    * Add a body panel. Geometry is re-centred on its own origin so detached panels tumble
    * around their middle. opts.detach = health fraction at which it flies off.
    */
@@ -1403,7 +1465,7 @@ const Truck = (() => {
     const center = geo.boundingBox.getCenter(new THREE.Vector3());
     geo.translate(-center.x, -center.y, -center.z);
     geo.computeVertexNormals();
-    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 3).fill(1), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.copy(center);
     body.add(mesh);
@@ -1411,7 +1473,9 @@ const Truck = (() => {
     const p = {
       name, mesh, normal, home: center.clone(), glass: !!opts.glass, side: opts.side || 0, detachAt: opts.detach || 0,
       base: geo.attributes.position.array.slice(), dent: new Float32Array(geo.attributes.position.count), loose: false,
+      su, sv,
     };
+    paintPanel(p);
     panels.push(p);
     return p;
   }
@@ -1735,7 +1799,7 @@ const Truck = (() => {
         p.mesh.position.copy(p.home); p.mesh.rotation.set(0, 0, 0); p.mesh.visible = true;
         const geo = p.mesh.geometry;
         geo.attributes.position.array.set(p.base); geo.attributes.position.needsUpdate = true;
-        geo.attributes.color.array.fill(1); geo.attributes.color.needsUpdate = true;
+        paintPanel(p);
         p.dent.fill(0);
         geo.computeVertexNormals();
       }
@@ -1754,7 +1818,7 @@ const Truck = (() => {
  * ===================================================================================== */
 const FighterKit = (() => {
   const mats = {
-    toon: Mat.toon(0xffffff, { vertexColors: true, rim: 0.45 }),
+    toon: Mat.toon(0xffffff, { vertexColors: true, rim: 0.5 }),
     // Jensen's jacket: glossy leather (Phong highlight instead of toon bands)
     gloss: new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 70, specular: 0xb0b0c0 }),
     glow: Mat.basic(0xffffff, { vertexColors: true, fog: false }),   // unlit "emissive" parts
@@ -1763,7 +1827,10 @@ const FighterKit = (() => {
   /** Standard chibi body: big head, small torso, big fists. o: colours + optional kinds. */
   function baseBody(rig, o) {
     const k = o.shirtKind || 'toon';
+    rig.skin = o.skin;
     rig.add('hips', box(0.34, 0.2, 0.25), o.pants, { p: [0, 0.02, 0] });
+    rig.add('hips', box(0.36, 0.05, 0.27), o.belt ?? 0x2a1e18, { p: [0, 0.1, 0] });               // belt
+    rig.add('hips', box(0.07, 0.05, 0.02), 0xc8a85a, { p: [0, 0.1, 0.136] });                    // buckle
     rig.add('torso', box(0.44, 0.44, 0.28), o.shirt, { p: [0, 0.22, 0] }, k);
     rig.add('torso', cyl(0.09, 0.1, 0.1, 6), o.skin, { p: [0, 0.46, 0] });
     rig.add('head', sph(0.36, 12, 10), o.skin, { p: [0, 0.34, 0] });
@@ -1777,6 +1844,7 @@ const FighterKit = (() => {
       rig.add('hip' + s, box(0.16, 0.28, 0.17), o.pants, { p: [0, -0.13, 0] });
       rig.add('knee' + s, box(0.15, 0.26, 0.16), o.pants, { p: [0, -0.12, 0] });
       rig.add('knee' + s, box(0.17, 0.1, 0.3), o.shoes, { p: [0, -0.27, 0.05] });
+      rig.add('knee' + s, box(0.18, 0.03, 0.31), o.sole ?? 0x1a1414, { p: [0, -0.33, 0.05] });     // sole
     }
   }
   /** Eyes, brows and mouth on their own pivots so they can blink / emote. */
@@ -1790,8 +1858,14 @@ const FighterKit = (() => {
     }
     rig.pivot('brows', 'head', [0, 0.48, 0.32]);
     const tilt = o.browTilt ?? 0.1;
-    rig.add('brows', box(0.13, 0.03, 0.03), o.brow ?? 0x2a1a14, { p: [0.12, 0, 0], r: [0, 0, -tilt] });
-    rig.add('brows', box(0.13, 0.03, 0.03), o.brow ?? 0x2a1a14, { p: [-0.12, 0, 0], r: [0, 0, tilt] });
+    rig.add('brows', box(0.14, 0.04, 0.035), o.brow ?? 0x2a1a14, { p: [0.12, 0, 0], r: [0, 0, -tilt] });
+    rig.add('brows', box(0.14, 0.04, 0.035), o.brow ?? 0x2a1a14, { p: [-0.12, 0, 0], r: [0, 0, tilt] });
+    // nose and cheek blush give the round faces some structure
+    if (rig.skin != null && !o.noNose) {
+      const sk = new THREE.Color(rig.skin);
+      rig.add('head', sph(0.055, 6, 5), sk.clone().multiplyScalar(0.86).getHex(), { p: [0, 0.29, 0.355], s: [1, 0.85, 0.9] });
+      for (const sx of [1, -1]) rig.add('head', sph(0.055, 6, 4), sk.clone().lerp(new THREE.Color(0xff6a7a), 0.35).getHex(), { p: [sx * 0.2, 0.26, 0.29], s: [1, 0.6, 0.35] });
+    }
     rig.pivot('mouth', 'head', [0, 0.2, 0.325]);
     rig.add('mouth', box(o.mouthW ?? 0.12, o.mouthH ?? 0.035, 0.03), 0x6a1a24, {});
     if (o.teeth) rig.add('mouth', box((o.mouthW ?? 0.12) * 0.85, 0.018, 0.035), 0xffffff, { p: [0, 0.006, 0] });
@@ -1845,7 +1919,7 @@ const FighterKit = (() => {
       rig.add('torso', box(0.13, 0.026, 0.01), 0xe8e8e8, { p: [-0.035, 0.27, 0.142], r: [0, 0, 0.6] }); // chevron print
       rig.add('torso', box(0.13, 0.026, 0.01), 0xe8e8e8, { p: [0.035, 0.27, 0.142], r: [0, 0, -0.6] });
       hairCap(rig, 'head', 0x3a2a20, { y: 0.43, z: -0.07 });                                        // receding
-      face(rig, { brow: 0x3a2a20, browTilt: -0.18, mouthW: 0.17, teeth: false });
+      face(rig, { brow: 0x3a2a20, browTilt: -0.18, mouthW: 0.17, teeth: false, noNose: true });
       rig.add('mouth', box(0.07, 0.045, 0.02), 0xffffff, { p: [0, -0.035, 0.008] });            // buck teeth
       rig.add('head', sph(0.05, 6, 5), 0xe89a90, { p: [0, 0.28, 0.355] });
       for (const sx of [1, -1]) for (let i = 0; i < 3; i++)
@@ -2911,9 +2985,24 @@ const HUD = (() => {
       return 1 + amp * Math.max(0, 1 - b.t / 0.22) ** 2;
     },
     /** Dark translucent plate with a hard black border. */
-    plate(ctx, x, y, w, h, fill = 'rgba(18,8,36,0.78)', edge = '#000') {
+    /** Bevelled panel: drop shadow, hard border, gradient fill, fine highlight / inner rim (2x canvas). */
+    plate(ctx, x, y, w, h, fill = 'rgba(18,8,36,0.8)', edge = '#000', rim = 'rgba(150,120,255,0.45)') {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x + 1, y + 2, w + 1, h);
       ctx.fillStyle = edge; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
       ctx.fillStyle = fill; ctx.fillRect(x, y, w, h);
+      const g = ctx.createLinearGradient(0, y, 0, y + h);
+      g.addColorStop(0, 'rgba(255,255,255,0.10)'); g.addColorStop(0.5, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(0,0,0,0.25)');
+      ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = rim;                                              // inner rim, one hi-res pixel
+      ctx.fillRect(x + 0.5, y + 0.5, w - 1, 0.5); ctx.fillRect(x + 0.5, y + h - 1, w - 1, 0.5);
+      ctx.fillRect(x + 0.5, y + 0.5, 0.5, h - 1); ctx.fillRect(x + w - 1, y + 0.5, 0.5, h - 1);
+    },
+    /** A framed portrait (drawn from a 2x-resolution canvas so it stays crisp). */
+    portrait(ctx, img, x, y, w, h, border = '#ffd23a') {
+      ctx.fillStyle = '#000'; ctx.fillRect(x - 1.5, y - 1.5, w + 3, h + 3);
+      ctx.fillStyle = border; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+      ctx.drawImage(img, x, y, w, h);
+      ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(x, y, w, 0.5);
     },
     update(dt) {
       for (const b of pops.values()) b.t += dt;
@@ -3271,7 +3360,7 @@ const States = {
         Showroom.scene.add(m.rig.root);
         return { m, ped, x, z, spin: i * 1.3, lift: 0 };
       });
-      this.portraits = FIGHTERS.map((_, i) => Portraits.fighter(i, 40));
+      this.portraits = FIGHTERS.map((_, i) => Portraits.fighter(i, 80));        // rendered at 2x for the 2x HUD
       this.camX = this.slotX(Game.fighterIndex);
       CamRig.to(this.camX * 0.85, 1.75, 8.4, this.camX * 0.9, 1.4, 0, true);
     },
@@ -3326,7 +3415,7 @@ const States = {
         g.addColorStop(0, sel ? '#4a2a7a' : '#22143c'); g.addColorStop(1, sel ? '#ff5a8a' : '#3a1a4a');
         ctx.fillStyle = g; ctx.fillRect(x, y0, size, size);
         ctx.globalAlpha = sel ? 1 : 0.7;
-        ctx.drawImage(this.portraits[i], x, y0);
+        ctx.drawImage(this.portraits[i], x, y0, size, size);
         ctx.globalAlpha = 1;
         if (sel && Math.floor(t * 4) % 2 === 0) PixelFont.draw(ctx, '1P', x + size / 2, y0 - 11, { align: 'center', color: '#ffd23a' });
       });
@@ -3340,8 +3429,8 @@ const States = {
     enter() {
       Game.view = 'harbor';
       Truck.reset(); Salesman.reset(); HUD.clear();
-      this.pf = Portraits.fighter(Game.fighterIndex, 112, 'guard', 0.7);
-      this.pt = Portraits.truck(150, 112);
+      this.pf = Portraits.fighter(Game.fighterIndex, 224, 'guard', 0.7);
+      this.pt = Portraits.truck(300, 224);
       this.slam = false;
     },
     exit() { Post.uniforms.uTint.value.setScalar(1); Post.uniforms.uFlash.value = 0; },
@@ -3372,9 +3461,9 @@ const States = {
       ctx.fillStyle = def.color; ctx.fillRect(offL, y0, 232, 2); ctx.fillRect(offL, y1 - 2, 192, 2);
       ctx.fillStyle = '#000'; ctx.fillRect(Math.round(40 + offL) - 2, 44, 116, 116);
       ctx.fillStyle = '#9ab8ff'; ctx.fillRect(248 + 40 + offR, y0, 232, 2); ctx.fillRect(248 + offR, y1 - 2, 232, 2);
-      ctx.drawImage(this.pf, Math.round(40 + offL), 46);
+      ctx.drawImage(this.pf, Math.round(40 + offL), 46, 112, 112);
       ctx.fillStyle = '#000'; ctx.fillRect(Math.round(306 + offR) - 2, 46 - 2, 154, 116);
-      ctx.drawImage(this.pt, Math.round(306 + offR), 46);
+      ctx.drawImage(this.pt, Math.round(306 + offR), 46, 150, 112);
       PixelFont.draw(ctx, def.name, 112 + offL, 166, { scale: 2, align: 'center', color: ['#ffffff', def.color] });
       PixelFont.draw(ctx, 'SPECIAL: ' + def.special, 112 + offL, 186, { align: 'center', color: '#ffd23a' });
       PixelFont.draw(ctx, 'THE CYBERCHUNK', 381 + offR, 166, { scale: 2, align: 'center', color: ['#ffffff', '#9ab8ff'] });
@@ -3398,6 +3487,8 @@ const States = {
       Game.fighter?.dispose();
       Specials.reset(); Truck.reset(); FX.clear(); Combat.reset(); Salesman.reset(); Stage.Crowd.calm(); HUD.clear();
       Juice.reset(); ComicText.clear();
+      this.icon = Portraits.fighter(Game.fighterIndex, 60);
+      this.truckIcon = Portraits.truck(80, 60);
       Game.fighter = new Fighter(Game.fighterIndex);
       CamRig.speed = 3;
       // retrying skips the cinematic intro
@@ -3410,7 +3501,7 @@ const States = {
         this.pitch = [pool[0], pool[1], "CAN'T SELL IT... WRECK IT IN 40 SECONDS AND I'LL PAY YOU!"];
         // camera path: close on the salesman, dolly, swoop over the truck, settle on the side view
         this.path = new THREE.CatmullRomCurve3([
-          new THREE.Vector3(9.8, 2.3, 5.2), new THREE.Vector3(8.6, 2.0, 7.4), new THREE.Vector3(3.5, 4.6, 11.5), new THREE.Vector3(-1.2, 2.3, 14.5),
+          new THREE.Vector3(9.8, 2.3, 5.2), new THREE.Vector3(8.6, 2.0, 7.4), new THREE.Vector3(3.5, 4.4, 11), new THREE.Vector3(-1.2, 2.05, 12.6),
         ]);
       }
     },
@@ -3519,7 +3610,7 @@ const States = {
         // cinematic swoop along the spline, look-at blending from the salesman to the fight
         const u = ease(clamp(this.phaseT / this.INTRO, 0, 1));
         const p = this.path.getPoint(u);
-        const lk = _v2.set(7.2, 1.5, -1.1).lerp(_v3.set(cx, 1.6, 0), ease(clamp((u - 0.35) / 0.65, 0, 1)));
+        const lk = _v2.set(7.2, 1.5, -1.1).lerp(_v3.set(cx, 1.42, 0), ease(clamp((u - 0.35) / 0.65, 0, 1)));
         CamRig.to(p.x, p.y, p.z, lk.x, lk.y, lk.z, true);
       } else if (this.phase === 'finisher') {
         // low, wide, slowly drifting angle on the wreck
@@ -3529,9 +3620,9 @@ const States = {
         // win: push in on the fighter by the wreck; lose: frame the fighter AND the gloating salesman
         const k = ease(clamp(this.phaseT / 1.2, 0, 1));
         const ex = this.win ? fx + 2.4 : (fx + Salesman.rig.root.position.x) / 2;
-        CamRig.to(lerp(cx, ex, k), lerp(2.3, 2.0, k), lerp(14.5, this.win ? 9.5 : 15.5, k), lerp(cx, ex, k), lerp(1.6, 1.25, k), 0);
+        CamRig.to(lerp(cx, ex, k), lerp(2.05, 2.0, k), lerp(12.6, this.win ? 9.5 : 15.5, k), lerp(cx, ex, k), lerp(1.42, 1.25, k), 0);
       } else {
-        CamRig.to(cx, 2.3, 14.5, cx, 1.6, 0);
+        CamRig.to(cx, 2.05, 12.6, cx, 1.42, 0);
       }
     },
     hud(ctx) {
@@ -3544,22 +3635,19 @@ const States = {
         return;
       }
       if (this.phase !== 'intro') {
-        // --- left: player name + score ---
-        HUD.plate(ctx, 5, 4, 132, 32);
-        PixelFont.draw(ctx, '1P', 9, 8, { color: '#ffd23a' });
-        PixelFont.draw(ctx, def.name, 25, 8, { color: def.color });
+        // --- left: portrait, player name, score and special meter ---
+        HUD.plate(ctx, 5, 4, 168, 47);
+        HUD.portrait(ctx, this.icon, 10, 9, 30, 30, def.color);
+        PixelFont.draw(ctx, '1P', 46, 8, { color: '#ffd23a' });
+        PixelFont.draw(ctx, def.name, 62, 8, { color: def.color });
         const sc = Combat.stats.score + (this.phase === 'end' && this.win ? Math.round(this.bonus * clamp((this.phaseT - 0.8) / 1.2, 0, 1)) : 0);
-        PixelFont.draw(ctx, String(sc).padStart(7, '0'), 9, 19, { scale: 2, pop: HUD.pop('score', Combat.stats.score, 0.12) });
-        // --- special cooldown meter ---
+        PixelFont.draw(ctx, String(sc).padStart(7, '0'), 46, 19, { scale: 2, pop: HUD.pop('score', Combat.stats.score, 0.12) });
         const f = Game.fighter, charge = f ? clamp(f.specialCharge, 0, 1) : 0;
-        HUD.plate(ctx, 5, 38, 132, 13);
-        PixelFont.draw(ctx, 'SP', 9, 41, { color: '#ffd23a' });
-        ctx.fillStyle = '#000'; ctx.fillRect(24, 41, 108, 7);
-        ctx.fillStyle = '#3a1230'; ctx.fillRect(25, 42, 106, 5);
         const ready = charge >= 1 && f.mode !== 'special';
-        ctx.fillStyle = ready ? (Math.floor(Stage.time * 8) % 2 ? '#ffffff' : def.color) : '#7a6ab8';
-        ctx.fillRect(25, 42, Math.round(106 * charge), 5);
-        if (ready && this.phase === 'play') PixelFont.draw(ctx, 'READY! L', 140, 41, { color: ['#ffffff', '#ffd23a'], pop: HUD.pop('spready', ready) });
+        PixelFont.draw(ctx, 'SP', 10, 42, { color: '#ffd23a' });
+        drawBar(ctx, 26, 43, 92, 4, charge, charge, false,
+          ready ? (Math.floor(Stage.time * 8) % 2 ? ['#ffffff', '#ffffff', '#c8c8ff'] : ['#ffffff', def.color, def.color]) : ['#c8b8ff', '#8a7ad8', '#5a4aa8']);
+        if (ready && this.phase === 'play') PixelFont.draw(ctx, 'READY! L', 168, 41, { align: 'right', color: ['#ffffff', '#ffd23a'], pop: HUD.pop('spready', ready, 0.3) });
         if (f && f.mode === 'special') {
           f.special.hud?.(ctx, f, f.modeT);
           if (scene.overrideMaterial && Math.floor(Stage.time * 6) % 2 === 0) PixelFont.draw(ctx, 'ENTERING THE METAVERSE...', 240, 60, { align: 'center', color: '#58e8ff' });
@@ -3567,23 +3655,24 @@ const States = {
         // --- centre: the big countdown ---
         const secs = Math.ceil(this.timer);
         const low = secs <= 10 && this.phase === 'play';
-        HUD.plate(ctx, 214, 3, 52, 38);
+        HUD.plate(ctx, 214, 3, 52, 38, 'rgba(18,8,36,0.85)', '#000', 'rgba(255,210,58,0.6)');
         const shake = secs <= 5 && this.phase === 'play' ? Math.round(Math.sin(Stage.time * 50)) : 0;
         PixelFont.draw(ctx, String(secs).padStart(2, '0'), 240 + shake, 9, {
-          scale: 4, align: 'center', outline: 2, pop: HUD.pop('timer', secs),
+          scale: 4, align: 'center', outline: 2, pop: HUD.pop('timer', secs, 0.22),
           color: low ? ['#ffffff', '#ff8a8a', '#ff2a3a'] : ['#ffffff', '#fff6c0', '#ffd23a'],
         });
         PixelFont.draw(ctx, 'TIME', 240, 44, { align: 'center', color: '#c8b8ff' });
         // --- right: the truck's health ---
-        HUD.plate(ctx, 266, 4, 210, 40);
-        PixelFont.draw(ctx, 'CYBERCHUNK', 470, 8, { align: 'right', color: '#fff36b' });
-        drawBar(ctx, 271, 18, 199, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
-        PixelFont.draw(ctx, CONDITION[Truck.stage], 470, 33, { align: 'right', color: CONDITION_COL[Truck.stage], outline: 1, pop: HUD.pop('cond', Truck.stage) });
+        HUD.plate(ctx, 271, 4, 204, 47);
+        HUD.portrait(ctx, this.truckIcon, 430, 9, 40, 30, '#9ab8ff');
+        PixelFont.draw(ctx, 'CYBERCHUNK', 424, 8, { align: 'right', color: '#fff36b' });
+        drawBar(ctx, 278, 19, 146, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
+        PixelFont.draw(ctx, CONDITION[Truck.stage], 470, 42, { align: 'right', color: CONDITION_COL[Truck.stage], outline: 1, pop: HUD.pop('cond', Truck.stage, 0.3) });
         // --- combo counter ---
         const sinceHit = Stage.time - Combat.stats.lastHitT;
         if (Combat.stats.combo >= 2 && sinceHit < 1.1) {
           ctx.globalAlpha = clamp((1.1 - sinceHit) / 0.3, 0, 1);
-          PixelFont.draw(ctx, `${Combat.stats.combo} HITS!`, 12, 58, { scale: 2, color: ['#ffffff', '#ffd23a', '#ff6a2a'], pop: HUD.pop('combo', Combat.stats.combo, 0.2) });
+          PixelFont.draw(ctx, `${Combat.stats.combo} HITS!`, 12, 62, { scale: 2, color: ['#ffffff', '#ffd23a', '#ff6a2a'], pop: HUD.pop('combo', Combat.stats.combo, 0.2) });
           ctx.globalAlpha = 1;
         }
         // --- bottom ---
@@ -3619,7 +3708,7 @@ const States = {
       this.model.rig.root.position.set(1.35, Showroom.TOP, 0);
       Showroom.scene.add(this.model.rig.root);
       HUD.clear();
-      HUD.say('line', r.win ? def.win : def.lose, () => _v3.set(2.6, 2.05, 0), { dur: 1e9, width: 18 });
+      HUD.say('line', r.win ? def.win : def.lose, () => _v3.set(2.75, 1.78, 0), { dur: 1e9, width: 18 });
     },
     exit() {
       this.model.rig.dispose();
@@ -3730,9 +3819,12 @@ function frame(now) {
   Shadows.update();
 
   renderer.info.reset();
+  Post.uniforms.uHazeAmt.value = Game.view === 'showroom' || scene.overrideMaterial ? 0 : 0.5;   // no haze in the showroom / metaverse
   renderPipeline(Game.view === 'showroom' ? Showroom.scene : scene, camera);
 
-  hud.clearRect(0, 0, CONFIG.LOW_W, CONFIG.LOW_H);
+  hud.setTransform(1, 0, 0, 1, 0, 0);
+  hud.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+  hud.setTransform(CONFIG.HUD_SCALE, 0, 0, CONFIG.HUD_SCALE, 0, 0);   // layout stays in 480x270 units
   Game.state.hud?.(hud);
   drawSoundStatus(hud, realDt);
 

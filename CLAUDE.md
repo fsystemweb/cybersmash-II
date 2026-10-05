@@ -67,5 +67,6 @@ cam, lineup, sfx...). They are inert unless called and exist for the tests.
 - Steady 60 fps on a mid-range laptop; **< 150 draw calls** per frame.
 - Use `InstancedMesh` for debris, particles, crowds; merge static scenery into few meshes.
 - Reuse geometries and materials; `dispose()` anything removed from the scene.
-- Cap `devicePixelRatio` at 2. Render the 3D scene at low resolution (480×270) and upscale.
+- Cap `devicePixelRatio` at 2. Render the 3D scene at low resolution (640×360) and upscale; the HUD is laid
+  out in 480×270 units on a 2× canvas.
 - Pre-compile shader variants at load (`prewarm()`), so the first special / fighter doesn't hitch.
