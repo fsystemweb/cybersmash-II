@@ -13,6 +13,23 @@
   #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   /* HUD is drawn at the low internal resolution and upscaled with hard pixels. */
   #hud { image-rendering: pixelated; image-rendering: crisp-edges; pointer-events: none; }
+  /* On-screen touch controls (only shown on touch devices). */
+  #touch { position: absolute; inset: 0; pointer-events: none; }
+  #touch[hidden] { display: none; }
+  #touch button {
+    position: absolute; pointer-events: auto; touch-action: none;
+    width: 11%; aspect-ratio: 1; border: 3px solid #000; border-radius: 18%;
+    background: rgba(40, 20, 70, 0.55); color: #fff; font: bold 3.2vmin monospace;
+    box-shadow: inset 0 -4px 0 rgba(0,0,0,0.45); opacity: 0.8;
+  }
+  #touch button.on { background: rgba(255, 210, 60, 0.75); color: #000; }
+  #touch [data-a=left] { left: 2%; bottom: 6%; }
+  #touch [data-a=right] { left: 14%; bottom: 6%; }
+  #touch [data-a=punch] { right: 26%; bottom: 6%; }
+  #touch [data-a=kick] { right: 14%; bottom: 14%; }
+  #touch [data-a=special] { right: 2%; bottom: 22%; background: rgba(255, 60, 110, 0.6); }
+  #touch [data-a=confirm] { left: 44.5%; bottom: 3%; width: 11%; aspect-ratio: 2.2; font-size: 2.4vmin; }
+  #touch [data-a=mute] { right: 2%; top: 30%; width: 7%; font-size: 2vmin; }
 </style>
 <!-- The only dependency: three.js, pinned. -->
 <script type="importmap">
@@ -23,6 +40,11 @@
 <div id="stage">
   <canvas id="gl"></canvas>
   <canvas id="hud" width="480" height="270"></canvas>
+  <div id="touch" hidden>
+    <button data-a="left">&lt;</button><button data-a="right">&gt;</button>
+    <button data-a="punch">J</button><button data-a="kick">K</button><button data-a="special">L</button>
+    <button data-a="confirm">START</button><button data-a="mute">M</button>
+  </div>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -108,6 +130,21 @@ addEventListener('keydown', (e) => {
   if (actions) for (const a of actions) Input.press(a);
 });
 addEventListener('keyup', (e) => Input.held.delete(e.code));
+
+/* ---------- Touch buttons: held actions go in Input.virtual, every tap is also an edge press ---------- */
+(() => {
+  const pad = document.getElementById('touch');
+  const show = () => { pad.hidden = false; };
+  if (matchMedia('(pointer: coarse)').matches) show();
+  addEventListener('touchstart', show, { once: true, passive: true });
+  for (const b of pad.querySelectorAll('button')) {
+    const a = b.dataset.a;
+    const down = (e) => { e.preventDefault(); Sound.unlock(); Input.virtual.add(a); Input.press(a); b.classList.add('on'); b.setPointerCapture?.(e.pointerId); };
+    const up = () => { Input.virtual.delete(a); b.classList.remove('on'); };
+    b.addEventListener('pointerdown', down);
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, up);
+  }
+})();
 addEventListener('blur', () => { Input.held.clear(); Input.virtual.clear(); });
 
 /* ---------- Pixel font: original 5x7 glyphs, '#' = ink. Lowercase maps to uppercase. ---------- */
@@ -2426,6 +2463,12 @@ const Specials = (() => {
 
   return {
     get: (id) => DEFS[id],
+    /** Make every prop visible (or hide them) — used once at load to pre-compile shaders. */
+    showAll(on) {
+      stamp.visible = chat.visible = beam.visible = on;
+      for (const d of decals) { if (on) scene.add(d); else d.removeFromParent(); d.visible = on; }
+    },
+    wireframe: (on) => setMetaverse(on),
     /** Put every prop away (new round, fighter disposed, state change). */
     reset() {
       stamp.visible = chat.visible = beam.visible = false;
@@ -2653,13 +2696,17 @@ const FX = (() => {
       this.grav[i] = o.grav ?? 18; this.drag[i] = o.drag ?? 0.5; this.bounce[i] = o.bounce ?? 0.3;
       this.mesh.setColorAt(i, _col.setHex(o.color));
       this.mesh.instanceColor.needsUpdate = true;
+      this.idle = false;
     }
     update(dt) {
+      if (this.idle) return;                 // nothing alive: no per-tick work, no GPU upload
+      let alive = 0;
       const { p, v, r, w } = this;
       for (let i = 0; i < this.max; i++) {
         if (this.life[i] <= 0) continue;
         this.life[i] -= dt;
         if (this.life[i] <= 0) { this.hide(i); continue; }
+        alive++;
         const i3 = i * 3;
         const dragK = Math.exp(-this.drag[i] * dt);
         v[i3] *= dragK; v[i3 + 2] *= dragK;
@@ -2682,8 +2729,9 @@ const FX = (() => {
         this.mesh.setMatrixAt(i, _dummy.matrix);
       }
       this.mesh.instanceMatrix.needsUpdate = true;
+      if (alive === 0) this.idle = true;
     }
-    clear() { for (let i = 0; i < this.max; i++) { this.life[i] = 0; this.hide(i); } this.mesh.instanceMatrix.needsUpdate = true; }
+    clear() { for (let i = 0; i < this.max; i++) { this.life[i] = 0; this.hide(i); } this.mesh.instanceMatrix.needsUpdate = true; this.idle = true; }
   }
 
   const debris = new Pool(box(1, 1, 1), Mat.toon(0xffffff, { rim: 0.5 }), 260);
@@ -2878,7 +2926,10 @@ const HUD = (() => {
       banners.push({ text, t: 0, dur: o.dur ?? 1.5, scale: o.scale ?? 6, color: o.color ?? ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'], y: o.y ?? 100, sub: o.sub, subColor: o.subColor });
     },
     /** Speech bubble for `id` that follows anchor() (a world-space point), typed out letter by letter. */
-    say(id, text, anchor, o = {}) { bubbles.set(id, { text, anchor, t: 0, dur: o.dur ?? 2.5, cps: o.cps ?? 28, lines: wrap(text, o.width ?? 22) }); },
+    say(id, text, anchor, o = {}) {
+      const lines = wrap(text, o.width ?? 22);
+      bubbles.set(id, { text, anchor, t: 0, dur: o.dur ?? 2.5, cps: o.cps ?? 28, lines, w: Math.max(...lines.map((l) => l.length)) * 6 + 9, h: lines.length * 9 + 6 });
+    },
     hush(id) { bubbles.delete(id); },
     drawBanners(ctx) {
       for (const b of banners) {
@@ -2895,7 +2946,7 @@ const HUD = (() => {
         _p.copy(bb.anchor()).project(camera);
         if (_p.z > 1) continue;
         const ax = (_p.x * 0.5 + 0.5) * W, ay = (0.5 - _p.y * 0.5) * H;
-        const w = Math.max(...bb.lines.map((l) => l.length)) * 6 + 9, h = bb.lines.length * 9 + 6;
+        const { w, h } = bb;
         const x = Math.round(clamp(ax - w / 2, 3, W - w - 3)), y = Math.round(clamp(ay - h - 9, 3, H - h - 12));
         const tx = Math.round(clamp(ax, x + 5, x + w - 8));
         const fade = clamp((bb.dur - bb.t) / 0.15, 0, 1);
@@ -3498,7 +3549,7 @@ const States = {
         PixelFont.draw(ctx, '1P', 9, 8, { color: '#ffd23a' });
         PixelFont.draw(ctx, def.name, 25, 8, { color: def.color });
         const sc = Combat.stats.score + (this.phase === 'end' && this.win ? Math.round(this.bonus * clamp((this.phaseT - 0.8) / 1.2, 0, 1)) : 0);
-        PixelFont.draw(ctx, String(sc).padStart(7, '0'), 9, 19, { scale: 2, pop: HUD.pop('score', Combat.stats.score, 0.2) });
+        PixelFont.draw(ctx, String(sc).padStart(7, '0'), 9, 19, { scale: 2, pop: HUD.pop('score', Combat.stats.score, 0.12) });
         // --- special cooldown meter ---
         const f = Game.fighter, charge = f ? clamp(f.specialCharge, 0, 1) : 0;
         HUD.plate(ctx, 5, 38, 132, 13);
@@ -3532,7 +3583,7 @@ const States = {
         const sinceHit = Stage.time - Combat.stats.lastHitT;
         if (Combat.stats.combo >= 2 && sinceHit < 1.1) {
           ctx.globalAlpha = clamp((1.1 - sinceHit) / 0.3, 0, 1);
-          PixelFont.draw(ctx, `${Combat.stats.combo} HITS!`, 10, 58, { scale: 2, color: ['#ffffff', '#ffd23a', '#ff6a2a'], pop: HUD.pop('combo', Combat.stats.combo) });
+          PixelFont.draw(ctx, `${Combat.stats.combo} HITS!`, 12, 58, { scale: 2, color: ['#ffffff', '#ffd23a', '#ff6a2a'], pop: HUD.pop('combo', Combat.stats.combo, 0.2) });
           ctx.globalAlpha = 1;
         }
         // --- bottom ---
@@ -3579,7 +3630,7 @@ const States = {
       // the pedestal turns slowly, showing off the pose
       this.ped.rotation.y = this.model.rig.root.rotation.y = Game.stateTime * 0.6 - 0.4;
       FighterKit.animate(this.model, this.r.win ? 'victory' : 'defeat', Game.stateTime, dt);
-      if (Input.wasPressed('up') || Input.wasPressed('down')) { this.choice ^= 1; Sound.play('blip'); }
+      if (Input.wasPressed('up') || Input.wasPressed('down') || Input.wasPressed('left') || Input.wasPressed('right')) { this.choice ^= 1; Sound.play('blip'); }
       if (Game.stateTime > 0.6 && Input.wasPressed('confirm')) { Sound.play('confirm'); setState(this.choice === 0 ? 'fight' : 'select'); }
       if (Input.wasPressed('back')) setState('select');
     },
@@ -3644,7 +3695,7 @@ function setState(name) {
 const SIM_DT = 1 / CONFIG.SIM_HZ;
 let accumulator = 0;
 let lastTime = performance.now();
-const perf = { fps: 60, frames: 0, acc: 0 };
+const perf = { fps: 60, frames: 0, acc: 0, cpu: 0 };
 
 function simulate(dt) {
   Game.stateTime += dt;
@@ -3660,18 +3711,18 @@ function simulate(dt) {
 
 function frame(now) {
   requestAnimationFrame(frame);
+  const cpu0 = performance.now();
   const realDt = Math.min(CONFIG.MAX_FRAME_DT, (now - lastTime) / 1000);
   lastTime = now;
   accumulator += realDt;
-  Juice.update(realDt);
-  ComicText.update(realDt);
+  if (!Game.paused) { Juice.update(realDt); ComicText.update(realDt); }
   // hit-stop freezes the simulation for a few frames; the debug pause freezes it entirely
   if (Game.paused || Juice.stop > 0) accumulator = 0;
   while (accumulator >= SIM_DT) {
     simulate(SIM_DT * Game.timeScale);
     accumulator -= SIM_DT;
   }
-  HUD.update(realDt);
+  if (!Game.paused) HUD.update(realDt);
   Game.state.frame?.(realDt);
   if (Game.camOverride) CamRig.to(...Game.camOverride, true);
   CamRig.update(realDt);
@@ -3685,6 +3736,7 @@ function frame(now) {
   Game.state.hud?.(hud);
   drawSoundStatus(hud, realDt);
 
+  perf.cpu = lerp(perf.cpu, performance.now() - cpu0, 0.05);   // smoothed CPU ms per frame
   perf.frames++; perf.acc += realDt;
   if (perf.acc >= 0.5) { perf.fps = perf.frames / perf.acc; perf.frames = 0; perf.acc = 0; }
 }
@@ -3694,11 +3746,11 @@ window.CS = {
   ready: false,
   get state() { return Game.stateName; },
   info: () => ({
-    state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
+    state: Game.stateName, fps: Math.round(perf.fps), cpuMs: +perf.cpu.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
     truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
     fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, phase: States.fight.phase,
     modeT: Game.fighter ? +Game.fighter.modeT.toFixed(3) : 0, phaseT: +(States.fight.phaseT ?? 0).toFixed(3),
-    timer: +(States.fight.timer ?? 0).toFixed(2), audio: Sound.state, muted: Sound.muted, hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best,
+    timer: +(States.fight.timer ?? 0).toFixed(2), audio: Sound.state, muted: Sound.muted, hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best, fighterIndex: Game.fighterIndex,
     result: Game.lastResult,
   }),
   debug: {
@@ -3713,6 +3765,11 @@ window.CS = {
       let peak = 0, n = 0;
       return new Promise((r) => { const id = setInterval(() => { peak = Math.max(peak, Sound.level()); if (++n >= 20) { clearInterval(id); r(peak); } }, 10); });
     },
+    /** While paused, advance the simulation by n fixed ticks (deterministic captures). */
+    step: (n = 1) => {
+      for (let i = 0; i < n; i++) { simulate(SIM_DT * Game.timeScale); HUD.update(SIM_DT); Juice.update(SIM_DT); ComicText.update(SIM_DT); }
+    },
+    clearComicText: () => ComicText.clear(),
     /** Freeze / resume the simulation (rendering keeps going). */
     pause: (on = true) => { Game.paused = on; },
     /** Jump straight into a round with fighter i (no intro). */
@@ -3736,6 +3793,25 @@ window.CS = {
   },
 };
 
+/**
+ * Compile every shader variant before play: all six fighters (incl. the glossy jacket),
+ * the special-move props, the showroom, and the wireframe "metaverse" override.
+ */
+function prewarm() {
+  const models = FIGHTERS.map((d) => { const m = FighterKit.build(d.id); m.rig.root.position.set(0, -60, 0); scene.add(m.rig.root); return m; });
+  Specials.showAll(true);
+  renderer.compile(scene, camera);
+  renderer.compile(Showroom.scene, camera);
+  const tiny = new THREE.WebGLRenderTarget(4, 4);
+  renderer.setRenderTarget(tiny);
+  renderer.render(scene, camera);
+  Specials.wireframe(true); renderer.render(scene, camera); Specials.wireframe(false);
+  renderer.setRenderTarget(null);
+  tiny.dispose();
+  Specials.showAll(false);
+  for (const m of models) m.rig.dispose();
+}
+prewarm();
 setState('title');
 requestAnimationFrame(frame);
 window.CS.ready = true;
