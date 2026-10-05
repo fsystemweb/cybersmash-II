@@ -1,4 +1,4 @@
-# CYBER SMASH
+# CYBER SMASH II
 
 **Play it: https://fsystemweb.github.io/cybersmash-II/**
 

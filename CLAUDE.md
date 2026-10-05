@@ -1,4 +1,4 @@
-# CYBER SMASH — project rules
+# CYBER SMASH II — project rules
 
 A comedic 3D browser parody of the early-90s arcade "destroy the car" bonus stage.
 A shady harbor salesman pays anyone who can wreck his angular electric pickup,

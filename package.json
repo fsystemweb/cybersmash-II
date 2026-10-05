@@ -2,7 +2,7 @@
   "name": "cybersmash-ii",
   "private": true,
   "version": "0.0.0",
-  "description": "CYBER SMASH - a 3D arcade bonus-stage parody built with three.js. Dev tooling only; the game itself is index.html with no build step.",
+  "description": "CYBER SMASH II - a 3D arcade bonus-stage parody built with three.js. Dev tooling only; the game itself is index.html with no build step.",
   "type": "module",
   "scripts": {
     "serve": "python3 -m http.server 8080",
