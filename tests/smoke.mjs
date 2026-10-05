@@ -178,6 +178,28 @@ async function main() {
     for (let i = 0; i < 3; i++) { await press('KeyJ'); await sleep(250); }
     const after = (await page.evaluate(() => CS.info())).hits;
     if (after !== before) problems.push(`out-of-range punches registered (${before} -> ${after})`);
+    // crouch (hold down): low jab + sweep must land (walk long enough to reach the truck's nose)
+    await page.keyboard.down('ArrowRight'); await sleep(2600); await page.keyboard.up('ArrowRight');
+    await page.keyboard.down('KeyS'); await sleep(250);
+    if (!(await page.evaluate(() => CS.info().crouching))) problems.push('holding down did not crouch');
+    const lowBefore = (await page.evaluate(() => CS.info())).hits;
+    await press('KeyJ'); await sleep(350); await press('KeyK'); await sleep(300);
+    await shot('crouch-sweep');
+    await sleep(300);
+    await page.keyboard.up('KeyS'); await sleep(150);
+    const lowAfter = (await page.evaluate(() => CS.info())).hits;
+    if (!(lowAfter >= lowBefore + 2)) problems.push(`crouching attacks did not land (${lowBefore} -> ${lowAfter})`);
+    // jump (up) with a flying kick near the apex, then land
+    await page.keyboard.down('ArrowUp'); await sleep(60); await page.keyboard.up('ArrowUp');
+    await sleep(180);
+    const air = await page.evaluate(() => CS.info());
+    if (!(air.air && air.fighterY > 0.4)) problems.push(`jump did not leave the ground (y ${air.fighterY})`);
+    await press('KeyK'); await sleep(120);
+    await shot('jump-kick');
+    await sleep(900);
+    const landed = await page.evaluate(() => CS.info());
+    if (landed.air || landed.fighterY !== 0) problems.push(`fighter did not land (y ${landed.fighterY})`);
+    if (!(landed.hits >= lowAfter + 1)) problems.push(`flying kick did not land (${lowAfter} -> ${landed.hits})`);
     await press('KeyH'); await sleep(300);
     await shot('hitbox-debug');
     await press('KeyH');

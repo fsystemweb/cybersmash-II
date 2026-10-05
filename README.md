@@ -16,6 +16,8 @@ There is no build step and there are no asset files. Every model, texture, lette
 | Action | Keyboard | Touch |
 |---|---|---|
 | Move | ← / → or A / D | `<` `>` |
+| Jump (hold ←/→ for a forward/back arc) | ↑ or W | `^` |
+| Crouch (hold) | ↓ or S | `v` |
 | Punch (fast, 1× damage) | **J** | `J` |
 | Kick (slower, longer reach, 1.5×) | **K** | `K` |
 | Special move (3×, 3 s cooldown) | **L** | `L` |
@@ -41,6 +43,17 @@ On-screen buttons appear automatically on touch devices.
    it's **SALE CANCELLED**: your fighter strikes their defeat pose and the salesman celebrates.
 5. The results screen shows score, time remaining and hits landed, with your fighter posing on a rotating
    pedestal. You can retry or pick another fighter. The best score is kept for the session.
+
+Punch and kick change with your stance, the way they do in classic side-view fighters:
+
+| | Punch (J) | Kick (K) |
+|---|---|---|
+| Standing | jab/cross, 10 | front kick, 15 |
+| Crouching | low jab, 8 (fastest) | leg sweep, 12 (longest reach) |
+| Jumping | diving punch, 12 | flying kick, 18 |
+
+Jumps follow a fixed arc. You get one attack per jump, and landing cuts it short, so time it on the
+way down. Specials (L) only work from the ground.
 
 Scoring: every hit is worth damage × 10 points. The clock freezes while a special move plays.
 

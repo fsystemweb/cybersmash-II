@@ -23,8 +23,12 @@
     box-shadow: inset 0 -4px 0 rgba(0,0,0,0.45); opacity: 0.8;
   }
   #touch button.on { background: rgba(255, 210, 60, 0.75); color: #000; }
-  #touch [data-a=left] { left: 2%; bottom: 6%; }
-  #touch [data-a=right] { left: 14%; bottom: 6%; }
+  /* d-pad: 9%-wide buttons are 16% of the 16:9 stage's height tall */
+  #touch [data-a=left], #touch [data-a=right], #touch [data-a=up], #touch [data-a=down] { width: 9%; }
+  #touch [data-a=left] { left: 1%; bottom: 18%; }
+  #touch [data-a=right] { left: 19%; bottom: 18%; }
+  #touch [data-a=up] { left: 10%; bottom: 35%; }
+  #touch [data-a=down] { left: 10%; bottom: 1%; }
   #touch [data-a=punch] { right: 26%; bottom: 6%; }
   #touch [data-a=kick] { right: 14%; bottom: 14%; }
   #touch [data-a=special] { right: 2%; bottom: 22%; background: rgba(255, 60, 110, 0.6); }
@@ -42,6 +46,7 @@
   <canvas id="hud" width="960" height="540"></canvas>
   <div id="touch" hidden>
     <button data-a="left">&lt;</button><button data-a="right">&gt;</button>
+    <button data-a="up">^</button><button data-a="down">v</button>
     <button data-a="punch">J</button><button data-a="kick">K</button><button data-a="special">L</button>
     <button data-a="confirm">START</button><button data-a="mute">M</button>
   </div>
@@ -69,9 +74,17 @@ const CONFIG = {
   // combat (damage in HP; the special is 3x a punch)
   PUNCH: { dmg: 10, power: 1, reach: 0.95, dur: 0.32, hitAt: 0.32 },
   KICK: { dmg: 15, power: 1.5, reach: 1.3, dur: 0.5, hitAt: 0.42 },
+  // jump-ins hit harder; crouching attacks are quick low pokes (y = fixed dent height)
+  AIR_PUNCH: { dmg: 12, power: 1.2, reach: 1.0, dur: 0.42, hitAt: 0.3 },
+  AIR_KICK: { dmg: 18, power: 1.6, reach: 1.35, dur: 0.55, hitAt: 0.3 },
+  LOW_PUNCH: { dmg: 8, power: 0.8, reach: 0.95, dur: 0.26, hitAt: 0.35, y: 0.8 },
+  LOW_KICK: { dmg: 12, power: 1.2, reach: 1.45, dur: 0.45, hitAt: 0.4, y: 0.7 },
   SPECIAL_DMG: 30,
   SPECIAL_COOLDOWN: 3,
   WALK_SPEED: 3.4,
+  JUMP_VEL: 7.4,           // take-off speed: ~0.7 s in the air, ~1.25 m apex
+  JUMP_VX: 3.2,            // forward/back jumps follow a fixed arc (no air steering)
+  GRAVITY: 22,
   BODY_R: 0.42,            // fighter half-width on the fight plane
   ARENA_MIN_X: -9,
   FIGHTER_START_X: -4.2,
@@ -1813,7 +1826,7 @@ const Truck = (() => {
 
 /* =====================================================================================
  * 6. FIGHTERS — chibi caricatures on the shared rig: one builder per character,
- *    procedural poses (idle, walk, punch, kick, victory, defeat) and the Fighter
+ *    procedural poses (idle, walk, crouch, jump, punch, kick, victory, defeat) and the Fighter
  *    gameplay controller.
  * ===================================================================================== */
 const FighterKit = (() => {
@@ -2070,15 +2083,15 @@ const FighterKit = (() => {
     rig.target.torso[2] += s * 0.05 * amt;
   }
   /** Straight punch. p = progress 0..1, side 'R' (near arm, cross) or 'L' (lead jab). */
-  function punch(rig, p, side) {
+  function punch(rig, p, side, aim = -1.62) {
     const ext = ease(seg(p, 0.1, 0.3)) * (1 - ease(seg(p, 0.55, 1)));
     const wind = seg(p, 0, 0.1) * (1 - seg(p, 0.1, 0.3));
     if (side === 'R') {
-      blend(rig, 'shR', -1.62, 0, -0.12, ext); blend(rig, 'elR', -0.05, 0, 0, ext);
+      blend(rig, 'shR', aim, 0, -0.12, ext); blend(rig, 'elR', -0.05, 0, 0, ext);
       rig.target.shR[0] += wind * 0.4;
       rig.target.torso[1] = lerp(-0.25, 0.45, ext);
     } else {
-      blend(rig, 'shL', -1.62, 0, 0.12, ext); blend(rig, 'elL', -0.05, 0, 0, ext);
+      blend(rig, 'shL', aim, 0, 0.12, ext); blend(rig, 'elL', -0.05, 0, 0, ext);
       rig.target.shL[0] += wind * 0.4;
       rig.target.torso[1] = lerp(-0.25, -0.7, ext);
     }
@@ -2095,6 +2108,43 @@ const FighterKit = (() => {
     blend(rig, 'torso', -0.25, -0.55, 0, ch);
     blend(rig, 'shL', -0.6, 0, 0.9, ch); blend(rig, 'shR', -0.4, 0, -0.9, ch);
     rig.bodyPos[1] += 0.06 * ch;
+    rig.bodyPos[2] = 0.1 * ext;
+  }
+  /** Squat layered over the guard. amt 0..1 (also used for take-off / landing squash). */
+  function crouch(rig, amt) {
+    blend(rig, 'hipL', -1.25, 0, 0.12, amt); blend(rig, 'kneeL', 2.1, 0, 0, amt);
+    blend(rig, 'hipR', -0.95, 0, -0.12, amt); blend(rig, 'kneeR', 2.0, 0, 0, amt);
+    blend(rig, 'torso', 0.25, -0.3, 0, amt);
+    blend(rig, 'head', -0.15, 0.25, 0, amt);
+    rig.bodyPos[1] = lerp(rig.bodyPos[1], -0.3, amt);
+  }
+  /** Airborne: knees tucked near the apex, legs reaching down while falling. vy = vertical speed. */
+  function jump(rig, vy, t) {
+    const tuck = clamp(1 - Math.abs(vy) / 6, 0, 1);
+    rig.set('hipL', -0.7 - tuck * 0.7, 0, 0.1); rig.set('kneeL', 1.1 + tuck * 0.9);
+    rig.set('hipR', -0.2 - tuck * 0.6, 0, -0.1); rig.set('kneeR', 0.5 + tuck * 1.2);
+    rig.set('torso', 0.1 + tuck * 0.15, -0.25, 0);
+    rig.set('shL', -1.2, 0, -0.3 - tuck * 0.2); rig.set('elL', -1.6);
+    rig.set('shR', -0.6 + Math.sin(t * 9) * 0.1, 0, 0.5); rig.set('elR', -1.9);
+    rig.bodyPos[1] = 0;
+  }
+  /** Flying kick: near leg locked out diagonally down-forward, lead leg tucked. */
+  function airKick(rig, p) {
+    const ext = ease(seg(p, 0, 0.28)) * (1 - ease(seg(p, 0.85, 1)));
+    blend(rig, 'hipR', -1.15, 0, 0, ext); blend(rig, 'kneeR', 0.05, 0, 0, ext);
+    blend(rig, 'hipL', -1.3, 0, 0.1, ext); blend(rig, 'kneeL', 2.2, 0, 0, ext);
+    blend(rig, 'torso', -0.3, -0.6, 0, ext);
+    blend(rig, 'shL', -0.5, 0, 1.0, ext); blend(rig, 'shR', -0.3, 0, -0.9, ext);
+    rig.bodyPos[2] = 0.08 * ext;
+  }
+  /** Low sweep from the crouch: near leg shoots out along the ground. */
+  function sweep(rig, p) {
+    const ext = ease(seg(p, 0.15, 0.4)) * (1 - ease(seg(p, 0.65, 1)));
+    blend(rig, 'hipR', -1.5, 0, 0, ext); blend(rig, 'kneeR', 0.1, 0, 0, ext);
+    blend(rig, 'hipL', -1.4, 0, 0.2, ext); blend(rig, 'kneeL', 2.5, 0, 0, ext);
+    blend(rig, 'torso', -0.1, -0.7, 0, ext);
+    blend(rig, 'shL', -0.2, 0, 0.6, ext); blend(rig, 'elL', -0.3, 0, 0, ext);
+    rig.bodyPos[1] -= 0.04 * ext;
     rig.bodyPos[2] = 0.1 * ext;
   }
   /** Per-character victory poses. */
@@ -2192,7 +2242,7 @@ const FighterKit = (() => {
     rig.j.brows.position.y = 0.48 + (f.mode === 'defeat' ? 0.03 : f.attacking ? -0.025 : 0);
   }
 
-  return { build, animate, finishPose, guard, walk, punch, kick, victory, defeat, stand, mats };
+  return { build, animate, finishPose, guard, walk, punch, kick, crouch, jump, airKick, sweep, victory, defeat, stand, mats };
 })();
 
 /* ---------- Special moves (L): one timeline per character, 3x punch damage ---------- */
@@ -2556,8 +2606,10 @@ const Specials = (() => {
 })();
 
 /**
- * The player-controlled fighter: movement on the X plane, attack timelines with a single
- * active frame that asks Combat to resolve the hit, input buffering, and pose selection.
+ * The player-controlled fighter: movement on the X plane (walk, crouch, fixed-arc jumps),
+ * attack timelines with a single active frame that asks Combat to resolve the hit, input
+ * buffering, and pose selection. Punch/kick become a jump punch / flying kick in the air
+ * and a low jab / sweep while crouching (`stance` is fixed when the attack starts).
  */
 class Fighter {
   constructor(index) {
@@ -2573,14 +2625,25 @@ class Fighter {
   }
   reset(x) {
     this.x = x; this.vx = 0; this.t = 0;
+    this.y = 0; this.vy = 0; this.air = false; this.airAttacked = false;
+    this.crouching = false; this.crouchAmt = 0; this.squash = 0; this.stance = 'stand';
     this.mode = 'idle'; this.modeT = 0; this.hitDone = false; this.queued = null; this.queuedT = 0;
     this.side = 'L'; this.walkPh = 0; this.walkAmt = 0; this.specialCD = 0;
     this.root.position.set(x, 0, 0);
   }
   get attacking() { return this.mode === 'punch' || this.mode === 'kick' || this.mode === 'special'; }
   setMode(mode) { this.mode = mode; this.modeT = 0; }
+  /** Attack data for the current punch/kick, by stance. */
+  get attack() {
+    const k = this.mode === 'kick';
+    if (this.stance === 'air') return k ? CONFIG.AIR_KICK : CONFIG.AIR_PUNCH;
+    if (this.stance === 'low') return k ? CONFIG.LOW_KICK : CONFIG.LOW_PUNCH;
+    return k ? CONFIG.KICK : CONFIG.PUNCH;
+  }
   startAttack(kind) {
     this.mode = kind; this.modeT = 0; this.hitDone = false;
+    this.stance = this.air ? 'air' : this.crouching ? 'low' : 'stand';
+    if (this.air) this.airAttacked = true;       // one attack per jump
     if (kind === 'punch') this.side = this.side === 'L' ? 'R' : 'L';
     this.model.extras.onAttack?.();
     if (kind !== 'special') Sound.play(kind === 'kick' ? 'whooshKick' : 'whoosh');
@@ -2606,7 +2669,7 @@ class Fighter {
     this.specialCD = Math.max(0, this.specialCD - dt);
     const wantPunch = control && Input.wasPressed('punch');
     const wantKick = control && Input.wasPressed('kick');
-    const wantSpecial = control && Input.wasPressed('special') && this.specialCD <= 0;
+    const wantSpecial = control && Input.wasPressed('special') && this.specialCD <= 0 && !this.air;
     if (wantPunch || wantKick || wantSpecial) { this.queued = wantSpecial ? 'special' : wantKick ? 'kick' : 'punch'; this.queuedT = 0.2; }
     this.queuedT -= dt;
     if (this.queuedT <= 0) this.queued = null;
@@ -2616,26 +2679,58 @@ class Fighter {
       this.special.update(this, this.modeT, dt);
       if (this.modeT >= this.special.dur) this.endSpecial();
     } else if (this.attacking) {
-      const A = this.mode === 'kick' ? CONFIG.KICK : CONFIG.PUNCH;
+      const A = this.attack;
       if (!this.hitDone && this.modeT >= A.dur * A.hitAt) {
         this.hitDone = true;
         Combat.strike(this, this.mode, A);
       }
       if (this.modeT >= A.dur) this.mode = 'idle';
-    } else if (this.mode === 'idle' && control) {
-      if (this.queued) { this.startAttack(this.queued); this.queued = null; }
-      else move = (Input.isDown('right') ? 1 : 0) - (Input.isDown('left') ? 1 : 0);
     }
+    const ctl = this.mode === 'idle' && control;
+    // crouch: hold down on the ground (no walking while crouched)
+    this.crouching = !this.air && ctl ? Input.isDown('down') : this.crouching && this.attacking && this.stance === 'low';
+    if (ctl && !this.air && !this.crouching && Input.isDown('up')) {
+      // jump: straight up, or a fixed forward/back arc chosen at take-off
+      const dir = (Input.isDown('right') ? 1 : 0) - (Input.isDown('left') ? 1 : 0);
+      this.air = true; this.airAttacked = false;
+      this.vy = CONFIG.JUMP_VEL; this.vx = dir * CONFIG.JUMP_VX;
+      this.squash = 0.6;
+      Sound.play('jump');
+      FX.burst('puff', _v3.set(this.x, 0.1, 0.1), 3, { scale: 0.7 });
+    } else if (ctl && this.queued && !(this.air && (this.airAttacked || this.queued === 'special'))) {
+      this.startAttack(this.queued); this.queued = null;
+    } else if (ctl && !this.air && !this.crouching) {
+      move = (Input.isDown('right') ? 1 : 0) - (Input.isDown('left') ? 1 : 0);
+    }
+    if (this.air) {
+      // ballistic arc; the horizontal speed only changes from recoil
+      this.vy -= CONFIG.GRAVITY * dt;
+      this.y += this.vy * dt;
+      if (this.y <= 0) this.land();
+    } else {
+      this.vx = damp(this.vx, move * CONFIG.WALK_SPEED, 18, dt);
+    }
+    this.squash = Math.max(0, this.squash - dt * 5);
+    this.crouchAmt = damp(this.crouchAmt, this.crouching ? 1 : 0, 22, dt);
     // movement on the fight plane; the truck's nose is a wall
-    const target = move * CONFIG.WALK_SPEED;
-    this.vx = damp(this.vx, target, 18, dt);
     this.x += this.vx * dt;
     const wall = Truck.destroyed ? Truck.backX() + 2 : Truck.frontX() - CONFIG.BODY_R;
     this.x = clamp(this.x, CONFIG.ARENA_MIN_X, wall);
     this.root.position.x = this.x;
-    this.walkPh += this.vx * dt * 4.2;
-    this.walkAmt = damp(this.walkAmt, Math.min(1, Math.abs(this.vx) / CONFIG.WALK_SPEED * 1.5), 12, dt);
+    this.root.position.y = this.y;
+    if (!this.air) this.walkPh += this.vx * dt * 4.2;
+    const walking = this.air || this.crouching ? 0 : Math.min(1, Math.abs(this.vx) / CONFIG.WALK_SPEED * 1.5);
+    this.walkAmt = damp(this.walkAmt, walking, 12, dt);
     this.animate(dt);
+  }
+  /** Touch down: a jump attack still in progress is cut short, as in the classics. */
+  land() {
+    this.y = 0; this.vy = 0; this.air = false; this.vx *= 0.3;
+    if (this.stance === 'air' && (this.mode === 'punch' || this.mode === 'kick')) this.mode = 'idle';
+    this.stance = 'stand';
+    this.squash = 1;
+    Sound.play('land');
+    FX.burst('puff', _v3.set(this.x, 0.1, 0.1), 4, { scale: 0.8 });
   }
   endSpecial() {
     this.special?.end?.(this);
@@ -2650,11 +2745,19 @@ class Fighter {
     if (this.mode === 'victory') K.victory(rig, this.modeT, this.def.id);
     else if (this.mode === 'defeat') K.defeat(rig, this.modeT, this.def.id);
     else if (this.mode === 'stand') K.stand(rig, this.t);
-    else {
+    else if (this.air && this.mode !== 'special') {
+      K.jump(rig, this.vy, this.t);
+      const p = this.attacking ? this.modeT / this.attack.dur : 0;
+      if (this.mode === 'punch') K.punch(rig, p, this.side, -1.15);
+      if (this.mode === 'kick') K.airKick(rig, p);
+    } else {
       K.guard(rig, this.t);
       if (this.walkAmt > 0.01) K.walk(rig, this.walkPh, this.walkAmt);
-      if (this.mode === 'punch') K.punch(rig, this.modeT / CONFIG.PUNCH.dur, this.side);
-      if (this.mode === 'kick') K.kick(rig, this.modeT / CONFIG.KICK.dur);
+      const low = Math.max(this.crouchAmt, this.squash * 0.55);
+      if (low > 0.01 && this.mode !== 'special') K.crouch(rig, low);
+      const p = this.attacking ? this.modeT / this.attack.dur : 0;
+      if (this.mode === 'punch') K.punch(rig, p, this.side, this.stance === 'low' ? -1.5 : -1.62);
+      if (this.mode === 'kick') { if (this.stance === 'low') K.sweep(rig, p); else K.kick(rig, p); }
       if (this.mode === 'special') this.special.pose(rig, this.modeT, this);
     }
     K.finishPose(this.model, this.t, dt, f);
@@ -2724,9 +2827,9 @@ const Combat = (() => {
     /** Update the hitbox overlay for the current fighter. */
     updateDebug(f) {
       if (!dbg.on || !f) return;
-      place(dbg.hurt, f.x - CONFIG.BODY_R, f.x + CONFIG.BODY_R, 0, 1.7);
-      const A = f.mode === 'kick' ? CONFIG.KICK : CONFIG.PUNCH;
-      place(dbg.hit, f.x, f.x + A.reach, f.mode === 'kick' ? 0.3 : 0.8, f.mode === 'kick' ? 1.0 : 1.3);
+      const A = f.attack, ay = A.y ?? (f.mode === 'kick' ? 0.65 : 1.05);
+      place(dbg.hurt, f.x - CONFIG.BODY_R, f.x + CONFIG.BODY_R, f.y, f.y + (f.crouching ? 1.15 : 1.7));
+      place(dbg.hit, f.x, f.x + A.reach, f.y + ay - 0.3, f.y + ay + 0.3);
       dbg.hit.material.opacity = f.attacking ? 0.6 : 0.18;
       if (Truck.destroyed) dbg.truck.visible = false;
       else { dbg.truck.visible = true; place(dbg.truck, Truck.frontX(), Truck.backX(), 0, 2.1); }
@@ -3207,6 +3310,8 @@ const Sound = (() => {
     // --- combat ---
     whoosh: () => hiss(0.14, 0.12, 'bandpass', 700, 2600, 1.5),
     whooshKick: () => hiss(0.24, 0.16, 'bandpass', 380, 1800, 1.2),
+    jump: () => { tone('square', 220, 520, 0.12, 0.1, 0, { lp: 2200 }); hiss(0.1, 0.08, 'bandpass', 900, 2400, 1.2); },
+    land: () => { tone('sine', 110, 55, 0.1, 0.4); hiss(0.08, 0.14, 'lowpass', 900, 250); },
     punch: () => { tone('sine', 150, 50, 0.14, 0.75); hiss(0.06, 0.3, 'lowpass', 1600, 400); },
     kick: () => { tone('sine', 115, 38, 0.22, 0.85); hiss(0.1, 0.35, 'lowpass', 1200, 300); },
     metal: (p = 1) => {
@@ -3342,7 +3447,7 @@ const States = {
       if (stamp > 0) PixelFont.draw(ctx, 'II', sx + sw + gap, 94, { scale: 8, color: ['#e0fcff', '#6bf3ff', '#3c9aff', '#b03cff'], outline: 3, pop: 1 + (1 - stamp) * 1.5 + Math.sin(t * 3 + 1.5) * 0.02 });
       PixelFont.draw(ctx, 'THE BONUS STAGE OF THE CENTURY', 240, 160, { align: 'center', color: '#ffd8f0' });
       if (Math.floor(t * 2.5) % 2 === 0) PixelFont.draw(ctx, 'PRESS ENTER', 240, 186, { scale: 2, align: 'center' });
-      PixelFont.draw(ctx, 'ARROWS/AD MOVE  J PUNCH  K KICK  L SPECIAL  M MUTE', 240, 236, { align: 'center', color: '#c8b8ff' });
+      PixelFont.draw(ctx, 'ARROWS/WASD MOVE, JUMP, CROUCH  J PUNCH  K KICK  L SPECIAL  M MUTE', 240, 236, { align: 'center', color: '#c8b8ff' });
       PixelFont.draw(ctx, '(C) 199X NOT-A-REAL-CORP. NO CYBERCHUNKS WERE HARMED... MUCH.', 240, 254, { align: 'center', color: '#8a7ab8', outline: 0 });
     },
   },
@@ -3682,7 +3787,7 @@ const States = {
         }
         // --- bottom ---
         PixelFont.draw(ctx, `BEST ${String(Game.best).padStart(7, '0')}`, 474, 260, { align: 'right', color: '#c8b8ff' });
-        if (this.phase === 'play' && this.phaseT < 6) PixelFont.draw(ctx, 'J PUNCH   K KICK   L SPECIAL', 240, 258, { align: 'center', color: '#ffffff' });
+        if (this.phase === 'play' && this.phaseT < 6) PixelFont.draw(ctx, 'UP JUMP  DOWN CROUCH  J PUNCH  K KICK  L SPECIAL', 240, 258, { align: 'center', color: '#ffffff' });
         // --- time bonus tally ---
         if (this.phase === 'end' && this.win && this.phaseT > 0.6) {
           const k = clamp((this.phaseT - 0.8) / 1.2, 0, 1);
@@ -3845,7 +3950,7 @@ window.CS = {
   info: () => ({
     state: Game.stateName, fps: Math.round(perf.fps), cpuMs: +perf.cpu.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
     truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
-    fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, phase: States.fight.phase,
+    fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, fighterY: Game.fighter ? +Game.fighter.y.toFixed(2) : null, air: Game.fighter?.air, crouching: Game.fighter?.crouching, phase: States.fight.phase,
     modeT: Game.fighter ? +Game.fighter.modeT.toFixed(3) : 0, phaseT: +(States.fight.phaseT ?? 0).toFixed(3),
     timer: +(States.fight.timer ?? 0).toFixed(2), audio: Sound.state, muted: Sound.muted, hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best, fighterIndex: Game.fighterIndex,
     result: Game.lastResult,
