@@ -137,6 +137,21 @@ async function main() {
   await waitState('fight', 10000);
   await sleep(1500);
   await shot('fight');
+
+  // Truck damage stages (debug hits, independent of the fighter).
+  if (await page.evaluate(() => !!window.CS.debug.hitTruck)) {
+    await page.evaluate(() => CS.debug.cam(0.5, 2.2, 11, 1.8, 1.2, 0));
+    for (const stage of [1, 2, 3, 4]) {
+      for (let i = 0; i < 80 && (await page.evaluate(() => CS.info().truckStage)) < stage; i++) {
+        await page.evaluate(() => CS.debug.hitTruck(30));
+        await sleep(60);
+      }
+      if ((await page.evaluate(() => CS.info().truckStage)) < stage) problems.push(`truck never reached damage stage ${stage}`);
+      await sleep(stage === 4 ? 2000 : 700);
+      await shot(`truck-stage${stage}`);
+    }
+    await page.evaluate(() => CS.debug.cam());
+  }
   await page.evaluate(() => window.CS.debug && window.CS.debug.endFight && window.CS.debug.endFight());
 
   // ---- results ----
