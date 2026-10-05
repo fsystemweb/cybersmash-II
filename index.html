@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>CYBER SMASH</title>
+<meta name="description" content="CYBER SMASH - wreck the Cyberchunk in under 40 seconds. A 3D arcade bonus-stage parody built with three.js.">
+<style>
+  /* Page: black letterbox around a 16:9 stage. */
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { touch-action: none; user-select: none; -webkit-user-select: none; }
+  #stage { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #000; overflow: hidden; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* HUD is drawn at the low internal resolution and upscaled with hard pixels. */
+  #hud { image-rendering: pixelated; image-rendering: crisp-edges; pointer-events: none; }
+</style>
+<!-- The only dependency: three.js, pinned. -->
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="hud" width="480" height="270"></canvas>
+</div>
+<script type="module">
+import * as THREE from 'three';
+
+/* =====================================================================================
+ * 1. CONFIG — every tunable lives here.
+ * ===================================================================================== */
+const CONFIG = {
+  ASPECT: 16 / 9,
+  LOW_W: 480,              // internal render / HUD resolution
+  LOW_H: 270,
+  MAX_DPR: 2,
+  SIM_HZ: 60,              // fixed simulation rate
+  MAX_FRAME_DT: 0.1,       // clamp huge frame gaps (tab switch)
+  FIGHT_TIME: 40,          // seconds on the clock
+  CAMERA_FOV: 28,
+};
+
+const FIGHTERS = [
+  { id: 'tromp',    name: 'DONALD TROMP' },
+  { id: 'muskrat',  name: 'ELON MUSKRAT' },
+  { id: 'zuck',     name: 'MARK ZUCKERBOT' },
+  { id: 'hassabyte',name: 'DEMIS HASSABYTE' },
+  { id: 'hwatt',    name: 'JENSEN HWATT' },
+  { id: 'oldman',   name: 'SAM OLDMAN' },
+];
+
+/* =====================================================================================
+ * 2. UTILS — math helpers, input, and the pixel font used by every bit of lettering.
+ * ===================================================================================== */
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt)); // frame-rate independent smoothing
+const rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+
+/* ---------- Input: held keys + edge-triggered presses consumed once per sim tick ---------- */
+const KEYMAP = {
+  left: ['ArrowLeft', 'KeyA'], right: ['ArrowRight', 'KeyD'],
+  up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
+  punch: ['KeyJ'], kick: ['KeyK'], special: ['KeyL'],
+  confirm: ['Enter', 'Space', 'NumpadEnter'], back: ['Escape', 'Backspace'],
+  mute: ['KeyM'], debug: ['KeyH'],
+};
+const Input = {
+  held: new Set(),      // physical key codes currently down
+  pressed: new Set(),   // actions pressed since the last sim tick
+  virtual: new Set(),   // actions held by touch buttons
+  isDown(action) { return KEYMAP[action].some((k) => this.held.has(k)) || this.virtual.has(action); },
+  wasPressed(action) { return this.pressed.has(action); },
+  press(action) { this.pressed.add(action); },
+  endTick() { this.pressed.clear(); },
+};
+const CODE_TO_ACTION = {};
+for (const [action, codes] of Object.entries(KEYMAP)) for (const c of codes) (CODE_TO_ACTION[c] ||= []).push(action);
+addEventListener('keydown', (e) => {
+  const actions = CODE_TO_ACTION[e.code];
+  if (actions) e.preventDefault();
+  if (e.repeat) return;
+  Input.held.add(e.code);
+  if (actions) for (const a of actions) Input.press(a);
+});
+addEventListener('keyup', (e) => Input.held.delete(e.code));
+addEventListener('blur', () => { Input.held.clear(); Input.virtual.clear(); });
+
+/* ---------- Pixel font: original 5x7 glyphs, '#' = ink. Lowercase maps to uppercase. ---------- */
+const FONT_SRC = `
+A .###. #...# #...# ##### #...# #...# #...#
+B ####. #...# #...# ####. #...# #...# ####.
+C .###. #...# #.... #.... #.... #...# .###.
+D ####. #...# #...# #...# #...# #...# ####.
+E ##### #.... #.... ####. #.... #.... #####
+F ##### #.... #.... ####. #.... #.... #....
+G .###. #...# #.... #.### #...# #...# .####
+H #...# #...# #...# ##### #...# #...# #...#
+I .###. ..#.. ..#.. ..#.. ..#.. ..#.. .###.
+J ..### ...#. ...#. ...#. #..#. #..#. .##..
+K #...# #..#. #.#.. ##... #.#.. #..#. #...#
+L #.... #.... #.... #.... #.... #.... #####
+M #...# ##.## #.#.# #.#.# #...# #...# #...#
+N #...# ##..# #.#.# #..## #...# #...# #...#
+O .###. #...# #...# #...# #...# #...# .###.
+P ####. #...# #...# ####. #.... #.... #....
+Q .###. #...# #...# #...# #.#.# #..#. .##.#
+R ####. #...# #...# ####. #.#.. #..#. #...#
+S .#### #.... #.... .###. ....# ....# ####.
+T ##### ..#.. ..#.. ..#.. ..#.. ..#.. ..#..
+U #...# #...# #...# #...# #...# #...# .###.
+V #...# #...# #...# #...# #...# .#.#. ..#..
+W #...# #...# #...# #.#.# #.#.# #.#.# .#.#.
+X #...# #...# .#.#. ..#.. .#.#. #...# #...#
+Y #...# #...# .#.#. ..#.. ..#.. ..#.. ..#..
+Z ##### ....# ...#. ..#.. .#... #.... #####
+0 .###. #...# #..## #.#.# ##..# #...# .###.
+1 ..#.. .##.. ..#.. ..#.. ..#.. ..#.. .###.
+2 .###. #...# ....# ...#. ..#.. .#... #####
+3 ####. ....# ....# .###. ....# ....# ####.
+4 ...#. ..##. .#.#. #..#. ##### ...#. ...#.
+5 ##### #.... ####. ....# ....# #...# .###.
+6 .###. #.... #.... ####. #...# #...# .###.
+7 ##### ....# ...#. ..#.. .#... .#... .#...
+8 .###. #...# #...# .###. #...# #...# .###.
+9 .###. #...# #...# .#### ....# ....# .###.
+! ..#.. ..#.. ..#.. ..#.. ..#.. ..... ..#..
+? .###. #...# ....# ...#. ..#.. ..... ..#..
+. ..... ..... ..... ..... ..... ..... ..#..
+, ..... ..... ..... ..... ..... ..#.. .#...
+: ..... ..#.. ..... ..... ..... ..#.. .....
+; ..... ..#.. ..... ..... ..... ..#.. .#...
+' ..#.. ..#.. .#... ..... ..... ..... .....
+" .#.#. .#.#. ..... ..... ..... ..... .....
+- ..... ..... ..... .###. ..... ..... .....
++ ..... ..#.. ..#.. ##### ..#.. ..#.. .....
+= ..... ..... ##### ..... ##### ..... .....
+% ##..# ##..# ...#. ..#.. .#... #..## #..##
+/ ....# ....# ...#. ..#.. .#... #.... #....
+( ...#. ..#.. .#... .#... .#... ..#.. ...#.
+) .#... ..#.. ...#. ...#. ...#. ..#.. .#...
+* ..... #.#.# .###. ##### .###. #.#.# .....
+< ...#. ..#.. .#... #.... .#... ..#.. ...#.
+> .#... ..#.. ...#. ....# ...#. ..#.. .#...
+# .#.#. .#.#. ##### .#.#. ##### .#.#. .#.#.
+$ ..#.. .#### #.#.. .###. ..#.# ####. ..#..
+& .##.. #..#. #.#.. .#... #.#.# #..#. .##.#
+_ ..... ..... ..... ..... ..... ..... #####
+`;
+const GLYPHS = {};
+for (const line of FONT_SRC.trim().split('\n')) {
+  const [ch, ...rows] = line.split(' ');
+  GLYPHS[ch] = rows.map((r) => [...r].map((c) => c === '#'));
+}
+GLYPHS[' '] = Array.from({ length: 7 }, () => Array(5).fill(false));
+
+const PixelFont = {
+  cache: new Map(),
+  /** Width in pixels of `str` drawn at `scale` (1 px gap between glyphs). */
+  measure(str, scale = 1) { return str.length ? str.length * 6 * scale - scale : 0; },
+  /**
+   * A cached canvas with one glyph. `colors` is an array distributed over the 7 rows
+   * (gives the classic two/three-tone arcade lettering). `outline` is a border in pixels.
+   */
+  glyph(ch, scale, colors, outline, outlineColor) {
+    const key = `${ch}|${scale}|${colors.join(',')}|${outline}|${outlineColor}`;
+    let c = this.cache.get(key);
+    if (c) return c;
+    const g = GLYPHS[ch] || GLYPHS[ch.toUpperCase()] || GLYPHS['?'];
+    c = document.createElement('canvas');
+    c.width = 5 * scale + outline * 2;
+    c.height = 7 * scale + outline * 2;
+    const x = c.getContext('2d');
+    if (outline > 0) {
+      x.fillStyle = outlineColor;
+      for (let r = 0; r < 7; r++) for (let q = 0; q < 5; q++) if (g[r][q]) x.fillRect(q * scale, r * scale, scale + outline * 2, scale + outline * 2);
+    }
+    for (let r = 0; r < 7; r++) {
+      x.fillStyle = colors[Math.min(colors.length - 1, Math.floor((r * colors.length) / 7))];
+      for (let q = 0; q < 5; q++) if (g[r][q]) x.fillRect(outline + q * scale, outline + r * scale, scale, scale);
+    }
+    this.cache.set(key, c);
+    return c;
+  },
+  /**
+   * Draw text. opts: scale, color (string or array of row colours), align ('left'|'center'|'right'),
+   * outline (px), outlineColor, pop (extra scale factor for bouncy numbers, drawn around the text centre).
+   */
+  draw(ctx, str, x, y, opts = {}) {
+    str = String(str);
+    const scale = opts.scale || 1;
+    const colors = Array.isArray(opts.color) ? opts.color : [opts.color || '#fff'];
+    const outline = opts.outline ?? Math.max(1, scale >> 1);
+    const outlineColor = opts.outlineColor || '#000';
+    const w = this.measure(str, scale);
+    let x0 = opts.align === 'center' ? x - w / 2 : opts.align === 'right' ? x - w : x;
+    const pop = opts.pop || 1;
+    ctx.save();
+    if (pop !== 1) {
+      const cx = x0 + w / 2, cy = y + (7 * scale) / 2;
+      ctx.translate(cx, cy); ctx.scale(pop, pop); ctx.translate(-cx, -cy);
+    }
+    for (const ch of str) {
+      if (ch !== ' ') ctx.drawImage(this.glyph(ch.toUpperCase(), scale, colors, outline, outlineColor), Math.round(x0 - outline), Math.round(y - outline));
+      x0 += 6 * scale;
+    }
+    ctx.restore();
+    return w;
+  },
+};
+
+/* =====================================================================================
+ * 3. RENDERER — WebGL renderer, camera, lights, 16:9 letterboxed resize.
+ * ===================================================================================== */
+const stageEl = document.getElementById('stage');
+const glCanvas = document.getElementById('gl');
+const hudCanvas = document.getElementById('hud');
+const hud = hudCanvas.getContext('2d');
+hud.imageSmoothingEnabled = false;
+
+const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, CONFIG.MAX_DPR));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.info.autoReset = false; // we reset once per frame so draw-call stats cover the whole frame
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a1745);
+const camera = new THREE.PerspectiveCamera(CONFIG.CAMERA_FOV, CONFIG.ASPECT, 0.1, 400);
+camera.position.set(0, 3.5, 16);
+camera.lookAt(0, 1.2, 0);
+
+// Lights: warm sunset key, cool sky fill and a hard back light for rims.
+const hemi = new THREE.HemisphereLight(0xffb37a, 0x3a2a5a, 1.1);
+const sun = new THREE.DirectionalLight(0xffd6a0, 2.2);
+sun.position.set(-8, 10, 8);
+const backLight = new THREE.DirectionalLight(0x7fd8ff, 1.4);
+backLight.position.set(6, 6, -10);
+scene.add(hemi, sun, backLight);
+
+/** Fit the stage into the window at 16:9, letterboxing the rest with black. */
+function resize() {
+  const ww = innerWidth, wh = innerHeight;
+  let w = ww, h = Math.round(ww / CONFIG.ASPECT);
+  if (h > wh) { h = wh; w = Math.round(wh * CONFIG.ASPECT); }
+  stageEl.style.width = w + 'px';
+  stageEl.style.height = h + 'px';
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, CONFIG.MAX_DPR));
+  renderer.setSize(w, h, false);
+}
+addEventListener('resize', resize);
+resize();
+
+/* =====================================================================================
+ * 4. STAGE — placeholder floor and prop until the harbor arrives.
+ * ===================================================================================== */
+const floor = new THREE.Mesh(new THREE.BoxGeometry(40, 0.5, 12), new THREE.MeshLambertMaterial({ color: 0x6b4a32 }));
+floor.position.y = -0.25;
+const placeholder = new THREE.Mesh(new THREE.BoxGeometry(5, 1.6, 2), new THREE.MeshLambertMaterial({ color: 0xb8bcc4 }));
+placeholder.position.set(2, 0.8, 0);
+scene.add(floor, placeholder);
+
+/* =====================================================================================
+ * 11. STATES — title → select → vs → fight → results, plus the fixed-timestep main loop.
+ * ===================================================================================== */
+const Game = {
+  state: null,
+  stateName: '',
+  stateTime: 0,          // sim seconds spent in the current state
+  timeScale: 1,          // slow-mo multiplier for the simulation
+  fighterIndex: 0,
+  lastResult: null,
+};
+
+/**
+ * Each state: enter(prev), exit(), update(dt) at a fixed rate, frame(realDt) once per
+ * rendered frame (camera, cosmetic animation), hud(ctx) to draw the overlay.
+ */
+const States = {
+  title: {
+    enter() { Game.stateTime = 0; },
+    update() { if (Input.wasPressed('confirm')) setState('select'); },
+    frame() {
+      const t = performance.now() / 1000;
+      camera.position.set(Math.sin(t * 0.2) * 14, 4, Math.cos(t * 0.2) * 14);
+      camera.lookAt(0, 1, 0);
+    },
+    hud(ctx) {
+      PixelFont.draw(ctx, 'CYBER SMASH', 240, 80, { scale: 5, align: 'center', color: ['#fff36b', '#ff9a3c', '#ff3c6e'], outline: 2 });
+      if (Math.floor(Game.stateTime * 2) % 2 === 0) PixelFont.draw(ctx, 'PRESS ENTER', 240, 190, { scale: 2, align: 'center' });
+    },
+  },
+  select: {
+    enter() { Game.stateTime = 0; },
+    update() {
+      if (Input.wasPressed('left')) Game.fighterIndex = (Game.fighterIndex + FIGHTERS.length - 1) % FIGHTERS.length;
+      if (Input.wasPressed('right')) Game.fighterIndex = (Game.fighterIndex + 1) % FIGHTERS.length;
+      if (Input.wasPressed('confirm')) setState('vs');
+      if (Input.wasPressed('back')) setState('title');
+    },
+    frame() { camera.position.set(0, 3, 12); camera.lookAt(0, 1, 0); },
+    hud(ctx) {
+      PixelFont.draw(ctx, 'SELECT YOUR FIGHTER', 240, 20, { scale: 2, align: 'center', color: '#fff36b' });
+      FIGHTERS.forEach((f, i) => {
+        PixelFont.draw(ctx, f.name, 240, 70 + i * 22, { scale: 2, align: 'center', color: i === Game.fighterIndex ? '#ff3c6e' : '#fff' });
+      });
+    },
+  },
+  vs: {
+    enter() { Game.stateTime = 0; },
+    update() { if (Game.stateTime > 2.5 || Input.wasPressed('confirm')) setState('fight'); },
+    frame() {
+      const t = Game.stateTime;
+      camera.position.set(Math.sin(t * 0.5) * 10, 2.5, 10);
+      camera.lookAt(2, 1, 0);
+    },
+    hud(ctx) {
+      PixelFont.draw(ctx, FIGHTERS[Game.fighterIndex].name, 240, 60, { scale: 3, align: 'center' });
+      PixelFont.draw(ctx, 'VS', 240, 115, { scale: 6, align: 'center', color: ['#fff36b', '#ff3c6e'] });
+      PixelFont.draw(ctx, 'THE CYBERCHUNK', 240, 190, { scale: 3, align: 'center' });
+    },
+  },
+  fight: {
+    enter() { Game.stateTime = 0; this.timer = CONFIG.FIGHT_TIME; },
+    update(dt) {
+      this.timer = Math.max(0, this.timer - dt);
+      if (this.timer <= 0) this.finish();
+    },
+    finish() { Game.lastResult = { win: false, timeLeft: this.timer }; setState('results'); },
+    frame() { camera.position.set(0, 3.5, 16); camera.lookAt(0, 1.2, 0); },
+    hud(ctx) { PixelFont.draw(ctx, String(Math.ceil(this.timer)), 240, 10, { scale: 4, align: 'center' }); },
+  },
+  results: {
+    enter() { Game.stateTime = 0; this.choice = 0; },
+    update() {
+      if (Input.wasPressed('up') || Input.wasPressed('down')) this.choice ^= 1;
+      if (Input.wasPressed('confirm')) setState(this.choice === 0 ? 'vs' : 'select');
+    },
+    frame() { camera.position.set(0, 3, 12); camera.lookAt(0, 1, 0); },
+    hud(ctx) {
+      PixelFont.draw(ctx, 'RESULTS', 240, 40, { scale: 4, align: 'center', color: '#fff36b' });
+      PixelFont.draw(ctx, 'RETRY', 240, 170, { scale: 2, align: 'center', color: this.choice === 0 ? '#ff3c6e' : '#fff' });
+      PixelFont.draw(ctx, 'CHANGE FIGHTER', 240, 194, { scale: 2, align: 'center', color: this.choice === 1 ? '#ff3c6e' : '#fff' });
+    },
+  },
+};
+
+function setState(name) {
+  const prev = Game.stateName;
+  Game.state?.exit?.(name);
+  Game.state = States[name];
+  Game.stateName = name;
+  Game.stateTime = 0;
+  Game.state.enter?.(prev);
+}
+
+/* ---------- Fixed-timestep loop: simulate at 60 Hz, render once per animation frame ---------- */
+const SIM_DT = 1 / CONFIG.SIM_HZ;
+let accumulator = 0;
+let lastTime = performance.now();
+const perf = { fps: 60, frames: 0, acc: 0 };
+
+function simulate(dt) {
+  Game.stateTime += dt;
+  Game.state.update?.(dt);
+  Input.endTick(); // edge presses are consumed by exactly one sim tick
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const realDt = Math.min(CONFIG.MAX_FRAME_DT, (now - lastTime) / 1000);
+  lastTime = now;
+  accumulator += realDt;
+  while (accumulator >= SIM_DT) {
+    simulate(SIM_DT * Game.timeScale);
+    accumulator -= SIM_DT;
+  }
+  Game.state.frame?.(realDt);
+
+  renderer.info.reset();
+  renderer.render(scene, camera);
+
+  hud.clearRect(0, 0, CONFIG.LOW_W, CONFIG.LOW_H);
+  Game.state.hud?.(hud);
+
+  perf.frames++; perf.acc += realDt;
+  if (perf.acc >= 0.5) { perf.fps = perf.frames / perf.acc; perf.frames = 0; perf.acc = 0; }
+}
+
+/* ---------- Test / debug hook (read-only peeks plus a fast-forward for the smoke test) ---------- */
+window.CS = {
+  ready: false,
+  get state() { return Game.stateName; },
+  info: () => ({ state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
+  debug: { endFight: () => Game.stateName === 'fight' && States.fight.finish() },
+};
+
+setState('title');
+requestAnimationFrame(frame);
+window.CS.ready = true;
+</script>
+</body>
+</html>

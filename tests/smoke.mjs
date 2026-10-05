@@ -1,0 +1,170 @@
+// CYBER SMASH — headless smoke test.
+//
+// Serves the repo root with `python3 -m http.server`, opens index.html in headless Chromium
+// (SwiftShader so WebGL works without a GPU), drives the game through its states with the
+// keyboard, and fails if there is any console error, WebGL error, failed request or uncaught
+// exception. Every step saves a screenshot to screenshots/tmp/ and checks it is not blank.
+//
+// Usage:
+//   node tests/smoke.mjs                 # test the local folder
+//   node tests/smoke.mjs --url <url>     # test a deployed URL (e.g. GitHub Pages)
+//   node tests/smoke.mjs --out <dir>     # screenshot directory (default screenshots/tmp)
+
+import { chromium } from 'playwright';
+import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const args = process.argv.slice(2);
+const argVal = (name, def) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
+const OUT = path.resolve(ROOT, argVal('--out', 'screenshots/tmp'));
+const PORT = 8000 + Math.floor(Math.random() * 900);
+let URL = argVal('--url', null);
+mkdirSync(OUT, { recursive: true });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const problems = [];
+let server = null;
+
+async function startServer() {
+  server = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'], { cwd: ROOT, stdio: 'ignore' });
+  URL = `http://127.0.0.1:${PORT}/index.html`;
+  for (let i = 0; i < 50; i++) {
+    try { const r = await fetch(URL); if (r.ok) return; } catch { /* not up yet */ }
+    await sleep(100);
+  }
+  throw new Error('static server did not start');
+}
+
+// Decide whether a screenshot is a real rendered frame (not blank / single colour).
+async function analyse(page, png) {
+  return page.evaluate(async (b64) => {
+    const img = new Image();
+    img.src = 'data:image/png;base64,' + b64;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = 160; c.height = 90;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0, 160, 90);
+    const d = g.getImageData(0, 0, 160, 90).data;
+    let sum = 0, sum2 = 0, nonBlack = 0;
+    const colours = new Set();
+    for (let i = 0; i < d.length; i += 4) {
+      const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      sum += l; sum2 += l * l;
+      if (l > 12) nonBlack++;
+      colours.add((d[i] >> 4) << 8 | (d[i + 1] >> 4) << 4 | (d[i + 2] >> 4));
+    }
+    const n = d.length / 4, mean = sum / n;
+    return { mean, std: Math.sqrt(Math.max(0, sum2 / n - mean * mean)), nonBlack: nonBlack / n, colours: colours.size };
+  }, png.toString('base64'));
+}
+
+async function main() {
+  if (!URL) await startServer();
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'],
+  });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const helper = await browser.newPage();
+
+  page.on('console', (m) => {
+    const t = m.text();
+    if (m.type() === 'error') problems.push(`console.error: ${t}`);
+    else if (/webgl|GL_INVALID|GL ERROR|shader|THREE\./i.test(t) && m.type() === 'warning') problems.push(`console.warning: ${t}`);
+  });
+  page.on('pageerror', (e) => problems.push(`uncaught: ${e.message}`));
+  page.on('requestfailed', (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
+
+  const state = () => page.evaluate(() => window.CS && window.CS.state);
+  const waitState = async (name, timeout = 15000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) { if ((await state()) === name) return; await sleep(50); }
+    throw new Error(`timed out waiting for state "${name}" (current: ${await state()})`);
+  };
+  const waitFor = async (fn, timeout = 15000, label = 'condition') => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) { if (await page.evaluate(fn)) return; await sleep(50); }
+    throw new Error(`timed out waiting for ${label}`);
+  };
+  const press = (k) => page.keyboard.press(k);
+  let shotN = 0;
+  const shot = async (name) => {
+    const file = path.join(OUT, `${String(++shotN).padStart(2, '0')}-${name}.png`);
+    const png = await page.screenshot({ path: file });
+    const a = await analyse(helper, png);
+    const info = await page.evaluate(() => window.CS && window.CS.info && window.CS.info());
+    console.log(`  shot ${path.relative(ROOT, file)}  std=${a.std.toFixed(1)} colours=${a.colours} lit=${(a.nonBlack * 100).toFixed(0)}%`, info ? JSON.stringify(info) : '');
+    if (a.std < 8 || a.colours < 8 || a.nonBlack < 0.2) problems.push(`screenshot "${name}" looks blank (std ${a.std.toFixed(1)}, colours ${a.colours})`);
+    return a;
+  };
+
+  console.log(`smoke: ${URL}`);
+  await page.goto(URL, { waitUntil: 'load' });
+  await waitFor(() => window.CS && window.CS.ready, 20000, 'game ready');
+
+  // ---- title ----
+  await waitState('title');
+  await sleep(1200);
+  await shot('title');
+
+  // Letterboxing: a square-ish window must still give a 16:9 stage.
+  await page.setViewportSize({ width: 900, height: 900 });
+  await sleep(200);
+  const box = await page.evaluate(() => { const r = document.getElementById('stage').getBoundingClientRect(); return { w: r.width, h: r.height }; });
+  if (Math.abs(box.w / box.h - 16 / 9) > 0.02) problems.push(`stage is not 16:9 after resize: ${box.w}x${box.h}`);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await sleep(200);
+
+  // ---- select ----
+  await press('Enter');
+  await waitState('select');
+  await sleep(1500);
+  await press('ArrowRight');
+  await sleep(500);
+  await shot('select');
+
+  // ---- vs ----
+  await press('Enter');
+  await waitState('vs');
+  await sleep(1200);
+  await shot('vs');
+
+  // ---- fight ----
+  await waitState('fight', 10000);
+  await sleep(1500);
+  await shot('fight');
+  await page.evaluate(() => window.CS.debug && window.CS.debug.endFight && window.CS.debug.endFight());
+
+  // ---- results ----
+  await waitState('results', 20000);
+  await sleep(1500);
+  await shot('results');
+
+  // Retry goes back into a fight; make sure a second round boots cleanly.
+  await press('Enter');
+  await waitFor(() => ['vs', 'fight'].includes(window.CS.state), 10000, 'retry');
+  await sleep(1000);
+
+  const info = await page.evaluate(() => window.CS.info && window.CS.info());
+  if (info && info.calls > 150) problems.push(`draw calls ${info.calls} > 150 budget`);
+
+  await browser.close();
+}
+
+let failed = false;
+try { await main(); }
+catch (e) { problems.push(`test error: ${e.stack || e.message}`); }
+finally { if (server) server.kill(); }
+
+if (problems.length) {
+  failed = true;
+  console.error('\nSMOKE FAILED:');
+  for (const p of problems) console.error('  - ' + p);
+} else {
+  console.log('\nSMOKE OK: no console errors, no WebGL errors, no uncaught exceptions, screens render.');
+}
+process.exit(failed ? 1 : 0);
