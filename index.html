@@ -560,9 +560,12 @@ const CamRig = {
     const k = 1 - Math.exp(-this.speed * dt);
     this.pos.lerp(this.tPos, k); this.look.lerp(this.tLook, k);
     this.fov = lerp(this.fov, this.tFov, k);
-    camera.position.copy(this.pos);
-    camera.lookAt(this.look);
-    if (camera.fov !== this.fov) { camera.fov = this.fov; camera.updateProjectionMatrix(); }
+    // juice: shake offset, a little roll, and the punch-zoom FOV kick
+    camera.position.copy(this.pos).add(Juice.offset);
+    camera.lookAt(_v1.copy(this.look).addScaledVector(Juice.offset, 0.5));
+    camera.rotateZ(Juice.roll);
+    const fov = this.fov + Juice.fovKick;
+    if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
   },
 };
 
@@ -1556,6 +1559,8 @@ const Truck = (() => {
         return;
       }
       scene.attach(p.mesh);
+      if (!this.destroyed) { Juice.shake(0.35); ComicText.pop('recall', _v3, 1.15); }
+      FX.burst('shard', _v3, 5);
       const n = _v1.copy(p.normal).applyQuaternion(root.quaternion);
       const v = new THREE.Vector3(n.x * rand(2, 3.5) + rand(1, 3), rand(4, 7), n.z * rand(2, 3.5) + rand(-0.5, 1.5)).multiplyScalar(strength);
       this.loose.push({ mesh: p.mesh, normal: p.normal, v, w: new THREE.Vector3(rand(-8, 8), rand(-6, 6), rand(-8, 8)).multiplyScalar(strength), rest: false });
@@ -1579,7 +1584,9 @@ const Truck = (() => {
       root.getWorldPosition(_v3); _v3.y = 1;
       FX.burst('bolt', _v3, 24);
       FX.burst('glass', _v3, 20);
+      FX.burst('shard', _v3, 18);
       FX.burst('spark', _v3, 30);
+      ComicText.pop('wreck', _v3.set(_v3.x, 1.6, _v3.z), 1.9);
       for (let i = 0; i < 8; i++) FX.burst('smoke', _v3, 1);
     },
 
@@ -2560,10 +2567,19 @@ const Combat = (() => {
       stats.score += Math.round(dealt * 10);
       stats.combo = Stage.time - stats.lastHitT < 0.9 ? stats.combo + 1 : 1;   // chain hits for the combo counter
       stats.lastHitT = Stage.time;
-      // impact feedback
+      // impact feedback: debris, hit-stop, shake, punch-zoom, comic text
+      const special = kind === 'special', heavy = A.power >= 1.5;
       _v3.set(Truck.frontX() + 0.05, clamp(p.y, 0.7, 1.6), 0.35);
       FX.burst('chip', _v3, 2 + Math.round(A.power * 2), { dir: _v1.set(-1.5, 1, 0.5) });
       FX.burst('spark', _v3, 4 + Math.round(A.power * 3));
+      if (heavy) FX.burst('shard', _v3, Math.round(A.power * 2), { dir: _v1.set(-1, 1.5, 1) });
+      Juice.hitstop(A.power >= 2.5 ? 0.13 : heavy ? 0.075 : A.power >= 1 ? 0.05 : 0.025);
+      Juice.shake(A.power >= 2.5 ? 0.55 : heavy ? 0.33 : A.power >= 1 ? 0.2 : 0.1);
+      if (heavy) Juice.zoom(A.power >= 2.5 ? 3.5 : 1.6);
+      if (A.power >= 2.5) Juice.flash(0.22);
+      const roll = Math.random();
+      if (A.power >= 2.5) ComicText.pop('heavy', _v3, 1.4);
+      else if (heavy ? roll < 0.6 : A.power >= 1 ? roll < 0.3 : roll < 0.12) ComicText.pop(heavy ? 'heavy' : 'light', _v3, heavy ? 1.1 : 0.85);
       f.vx -= 1.2 * A.power;                              // recoil
       // the audience
       if (A.power >= 1.5 && Math.random() < 0.5) Salesman.react('cover', 1.1);
@@ -2657,12 +2673,14 @@ const FX = (() => {
   const debris = new Pool(box(1, 1, 1), Mat.toon(0xffffff, { rim: 0.5 }), 260);
   const glow = new Pool(new THREE.OctahedronGeometry(0.7, 0), Mat.basic(0xffffff, { fog: false }), 220);
   const smoke = new Pool(new THREE.IcosahedronGeometry(0.5, 0), Mat.toon(0xffffff, { rim: 0.15 }), 110);
+  const shards = new Pool(box(1, 0.12, 0.62), Mat.toon(0xffffff, { rim: 0.6, side: THREE.DoubleSide }), 160); // flat panel & glass shards
 
   /** Named particle recipes. burst(kind, position, count, {scale, dir}). */
   const RECIPES = {
     bolt: (o) => [debris, { life: rand(1.2, 2.2), s0: rand(0.05, 0.1) * o.scale, color: pick([0x8d939e, 0x5d636e, 0xc8ced8, 0x2a2a30]), grav: 18, bounce: 0.4 }, 4, 5],
     chip: (o) => [debris, { life: rand(1.5, 2.6), s0: rand(0.1, 0.22) * o.scale, color: pick([0xc8ced8, 0xb0b6c0, 0xe0e4ea]), grav: 18, bounce: 0.3 }, 3.5, 4],
-    glass: (o) => [debris, { life: rand(1.2, 2.0), s0: rand(0.05, 0.12) * o.scale, color: pick([0xbfe6ff, 0x8fc8ee, 0xffffff, 0x6aa0c8]), grav: 16, bounce: 0.35, spin: 16 }, 3, 4],
+    glass: (o) => [shards, { life: rand(1.4, 2.4), s0: rand(0.08, 0.18) * o.scale, color: pick([0xbfe6ff, 0x8fc8ee, 0xffffff, 0x6aa0c8]), grav: 16, bounce: 0.35, spin: 16 }, 3, 4],
+    shard: (o) => [shards, { life: rand(1.8, 3.0), s0: rand(0.15, 0.32) * o.scale, color: pick([0xa9b1bf, 0x8d95a3, 0xc0c8d4, 0x6a7280]), grav: 18, bounce: 0.3, spin: 12 }, 3.5, 4.5],
     spark: (o) => [glow, { life: rand(0.25, 0.6), s0: rand(0.06, 0.12) * o.scale, s1: 0.01, color: pick([0xfff27a, 0xffc040, 0xffffff]), grav: 9, drag: 1, bounce: 0.5, spin: 0 }, 6, 6],
     smoke: (o) => [smoke, { life: rand(1.4, 2.2), s0: rand(0.2, 0.32) * o.scale, s1: rand(0.75, 1.1) * o.scale, color: pick([0x5a5462, 0x6c6674, 0x7e7886]), grav: -1.8, drag: 1.2, bounce: 0, spin: 1.5 }, 0.5, 0.6],
     puff: (o) => [smoke, { life: rand(0.4, 0.7), s0: rand(0.2, 0.35) * o.scale, s1: rand(0.6, 0.9) * o.scale, color: pick([0xe8dcd0, 0xd8ccc0]), grav: -1, drag: 4, bounce: 0, spin: 2 }, 3, 2],
@@ -2671,7 +2689,7 @@ const FX = (() => {
   };
 
   return {
-    debris, glow, smoke,
+    debris, glow, smoke, shards,
     /**
      * Spawn `count` particles of a recipe at `pos`. opts.dir biases the velocity
      * (e.g. away from a punch), opts.scale scales the size.
@@ -2688,8 +2706,111 @@ const FX = (() => {
         );
       }
     },
-    update(dt) { debris.update(dt); glow.update(dt); smoke.update(dt); },
-    clear() { debris.clear(); glow.clear(); smoke.clear(); },
+    update(dt) { debris.update(dt); glow.update(dt); smoke.update(dt); shards.update(dt); },
+    clear() { debris.clear(); glow.clear(); smoke.clear(); shards.clear(); },
+  };
+})();
+
+/* ---------- Juice: screen shake, hit-stop, camera punch-zoom, flashes ---------- */
+const Juice = (() => {
+  let trauma = 0, fovKick = 0, t = 0;
+  const offset = new THREE.Vector3();
+  return {
+    offset,
+    roll: 0,
+    stop: 0,              // seconds of hit-stop left (sim frozen, camera keeps shaking)
+    get fovKick() { return fovKick; },
+    /** Add screen-shake trauma (0..1); the shake scales with trauma². */
+    shake(a) { trauma = Math.min(1, trauma + a); },
+    /** Freeze the simulation for a few frames on impact. */
+    hitstop(s) { this.stop = Math.max(this.stop, s); },
+    /** Punch the camera in (narrow the FOV by `deg` degrees, eases back). */
+    zoom(deg) { fovKick = Math.min(fovKick, -deg); },
+    flash(a, color = 0xffffff) { Post.uniforms.uFlash.value = Math.max(Post.uniforms.uFlash.value, a); Post.uniforms.uFlashColor.value.setHex(color); },
+    update(dt) {
+      t += dt;
+      this.stop = Math.max(0, this.stop - dt);
+      trauma = Math.max(0, trauma - dt * 1.6);
+      const s = trauma * trauma;
+      // layered sines as cheap smooth noise
+      offset.set(
+        (Math.sin(t * 47) + Math.sin(t * 83) * 0.5) * 0.22 * s,
+        (Math.sin(t * 53 + 1) + Math.sin(t * 97) * 0.5) * 0.16 * s,
+        0,
+      );
+      this.roll = Math.sin(t * 61) * 0.035 * s;
+      fovKick = damp(fovKick, 0, 7, dt);
+      Post.uniforms.uFlash.value = Math.max(0, Post.uniforms.uFlash.value - dt * 3.2);
+    },
+    reset() { trauma = 0; fovKick = 0; this.stop = 0; offset.set(0, 0, 0); this.roll = 0; Post.uniforms.uFlash.value = 0; },
+  };
+})();
+
+/* ---------- Comic hit text: 3D billboards (sprites) that scale in, wobble and fade ---------- */
+const ComicText = (() => {
+  const WORDS = { light: ['BONK!', 'WHAM!', 'POW!', 'KRAK!', 'DENT!', 'OOF!'], heavy: ['CRUNCH!', 'SPANG!', 'KA-BLAM!', 'VOID WARRANTY!'], recall: ['RECALL!'], wreck: ['NO REFUNDS!'] };
+  const PALETTE = [['#ffe14a', '#ff3c3c'], ['#7dfff0', '#3a5aff'], ['#ffffff', '#ff7a2a'], ['#ff8ad8', '#8a2aff']];
+  const texCache = new Map();
+  /** Jagged comic "burst" behind outlined pixel lettering. */
+  function wordTexture(word, pal) {
+    const key = word + pal;
+    if (texCache.has(key)) return texCache.get(key);
+    const scale = 2, tw = PixelFont.measure(word, scale);
+    const w = tw + 30, h = 40;
+    const [c, x] = makeCanvas(w, h);
+    const burst = (grow, col) => {
+      x.beginPath();
+      const n = 18;
+      for (let i = 0; i <= n; i++) {
+        const a = (i / n) * Math.PI * 2, r = i % 2 ? 0.78 : 1;
+        const px = w / 2 + Math.cos(a) * (w / 2 - 2 + grow) * r, py = h / 2 + Math.sin(a) * (h / 2 - 2 + grow) * r;
+        i ? x.lineTo(px, py) : x.moveTo(px, py);
+      }
+      x.fillStyle = col; x.fill();
+    };
+    burst(0, '#000');
+    burst(-2, PALETTE[pal][0]);
+    burst(-7, PALETTE[pal][1]);
+    PixelFont.draw(x, word, w / 2, h / 2 - 7, { scale, align: 'center', color: ['#ffffff', '#fff6c0'], outline: 1 });
+    const tex = canvasTexture(c);
+    tex.userData = { w, h };
+    texCache.set(key, tex);
+    return tex;
+  }
+  const pool = Array.from({ length: 6 }, () => {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false, depthWrite: false }));
+    s.renderOrder = 80; s.visible = false;
+    scene.add(s);
+    return { s, t: 0, life: 0, size: 1, tilt: 0, base: 1 };
+  });
+  let next = 0;
+  return {
+    /** Pop a word of `kind` ('light' | 'heavy' | 'recall' | 'wreck') at a world position. */
+    pop(kind, pos, size = 1) {
+      const p = pool[next++ % pool.length];
+      const tex = wordTexture(pick(WORDS[kind]), (Math.random() * PALETTE.length) | 0);
+      p.s.material.map = tex; p.s.material.needsUpdate = true;
+      p.base = tex.userData.w / 36 * size;
+      p.aspect = tex.userData.h / tex.userData.w;
+      p.s.position.set(pos.x + rand(-0.3, 0.3), pos.y + rand(0.2, 0.6), pos.z + 1.2);
+      p.t = 0; p.life = 0.95; p.tilt = rand(-0.25, 0.25);
+      p.s.visible = true;
+    },
+    update(dt) {
+      for (const p of pool) {
+        if (!p.s.visible) continue;
+        p.t += dt;
+        if (p.t > p.life) { p.s.visible = false; continue; }
+        const k = p.t / 0.13;
+        const sIn = k < 1 ? 1 + 2.70158 * Math.pow(k - 1, 3) + 1.70158 * Math.pow(k - 1, 2) : 1;   // ease-out-back
+        const sc = p.base * Math.max(0.01, sIn);
+        p.s.scale.set(sc, sc * p.aspect, 1);
+        p.s.material.rotation = p.tilt + Math.sin(p.t * 22) * 0.12 * Math.max(0, 1 - p.t * 2);
+        p.s.position.y += dt * 0.5;
+        p.s.material.opacity = clamp((p.life - p.t) / 0.25, 0, 1);
+      }
+    },
+    clear() { for (const p of pool) p.s.visible = false; },
   };
 })();
 
@@ -3045,6 +3166,7 @@ const States = {
       this.timer = CONFIG.FIGHT_TIME; this.win = false; this.bonus = 0; this.events = new Set();
       Game.fighter?.dispose();
       Specials.reset(); Truck.reset(); FX.clear(); Combat.reset(); Salesman.reset(); Stage.Crowd.calm(); HUD.clear();
+      Juice.reset(); ComicText.clear();
       Game.fighter = new Fighter(Game.fighterIndex);
       CamRig.speed = 3;
       // retrying skips the cinematic intro
@@ -3061,7 +3183,7 @@ const States = {
         ]);
       }
     },
-    exit() { Combat.hideDebug(); Specials.reset(); HUD.clear(); },
+    exit() { Combat.hideDebug(); Specials.reset(); HUD.clear(); Juice.reset(); ComicText.clear(); },
     setPhase(p) { this.phase = p; this.phaseT = 0; this.events = new Set(); },
     /** Fire `fn` once when the phase clock passes `t`. */
     at(t, key, fn) { if (this.phaseT >= t && !this.events.has(key)) { this.events.add(key); fn(); } },
@@ -3089,13 +3211,27 @@ const States = {
         // super-move freeze: the clock stops while a special plays out
         if (f.mode !== 'special') this.timer = Math.max(0, this.timer - dt);
         f.update(dt, true);
-        if (Truck.destroyed) this.end(true);
+        if (Truck.destroyed) this.finisher();
         else if (this.timer <= 0) this.end(false);
+      } else if (this.phase === 'finisher') {
+        f.update(dt, false);
+        if (this.phaseT > 0.42) { Game.timeScale = 1; this.end(true); }
       } else if (this.phase === 'end') {
         f.update(dt, false);
         this.endSequence();
       }
       Combat.updateDebug(f);
+    },
+    /** The killing blow: hit-stop, flash, then slow motion from a low dramatic angle. */
+    finisher() {
+      const f = Game.fighter;
+      if (f.mode === 'special') f.endSpecial();
+      this.setPhase('finisher');
+      this.finX = Truck.root.position.x;
+      Game.timeScale = 0.2;
+      Juice.hitstop(0.22); Juice.shake(1); Juice.flash(0.85); Juice.zoom(6);
+      Salesman.react('faint');
+      Stage.Crowd.excite(1);
     },
     /** The round is decided: truck wrecked (win) or time up (lose). */
     end(win) {
@@ -3147,6 +3283,10 @@ const States = {
         const p = this.path.getPoint(u);
         const lk = _v2.set(7.2, 1.5, -1.1).lerp(_v3.set(cx, 1.6, 0), ease(clamp((u - 0.35) / 0.65, 0, 1)));
         CamRig.to(p.x, p.y, p.z, lk.x, lk.y, lk.z, true);
+      } else if (this.phase === 'finisher') {
+        // low, wide, slowly drifting angle on the wreck
+        const k = clamp(this.phaseT / 0.42, 0, 1), tx = this.finX;
+        CamRig.to(tx - 2.4 + k * 0.7, 0.45 + k * 0.2, 7.2 - k * 0.7, tx - 1.3, 1.3, 0, true, 36);
       } else if (this.phase === 'end') {
         // win: push in on the fighter by the wreck; lose: frame the fighter AND the gloating salesman
         const k = ease(clamp(this.phaseT / 1.2, 0, 1));
@@ -3158,6 +3298,13 @@ const States = {
     },
     hud(ctx) {
       const def = FIGHTERS[Game.fighterIndex];
+      if (this.phase === 'finisher') {
+        // cinematic letterbox for the slow-motion finisher
+        ctx.fillStyle = '#000';
+        const bar = Math.round(26 * Math.min(1, this.phaseT / 0.08));
+        ctx.fillRect(0, 0, 480, bar); ctx.fillRect(0, 270 - bar, 480, bar);
+        return;
+      }
       if (this.phase !== 'intro') {
         // --- left: player name + score ---
         HUD.plate(ctx, 5, 4, 132, 32);
@@ -3315,7 +3462,10 @@ function frame(now) {
   const realDt = Math.min(CONFIG.MAX_FRAME_DT, (now - lastTime) / 1000);
   lastTime = now;
   accumulator += realDt;
-  if (Game.paused) accumulator = 0;             // debug freeze-frame (rendering continues)
+  Juice.update(realDt);
+  ComicText.update(realDt);
+  // hit-stop freezes the simulation for a few frames; the debug pause freezes it entirely
+  if (Game.paused || Juice.stop > 0) accumulator = 0;
   while (accumulator >= SIM_DT) {
     simulate(SIM_DT * Game.timeScale);
     accumulator -= SIM_DT;
@@ -3345,7 +3495,7 @@ window.CS = {
     state: Game.stateName, fps: Math.round(perf.fps), calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
     truckHP: Math.round(Truck.hp), truckStage: Truck.stage,
     fighterX: Game.fighter ? +Game.fighter.x.toFixed(2) : null, fighterMode: Game.fighter?.mode, phase: States.fight.phase,
-    modeT: Game.fighter ? +Game.fighter.modeT.toFixed(3) : 0,
+    modeT: Game.fighter ? +Game.fighter.modeT.toFixed(3) : 0, phaseT: +(States.fight.phaseT ?? 0).toFixed(3),
     timer: +(States.fight.timer ?? 0).toFixed(2), hits: Combat.stats.hits, score: Combat.stats.score, best: Game.best,
     result: Game.lastResult,
   }),
