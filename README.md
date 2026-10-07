@@ -15,19 +15,22 @@ There is no build step and there are no asset files. Every model, texture, lette
 
 | Action | Keyboard | Touch |
 |---|---|---|
-| Move | ← / → or A / D | `<` `>` |
-| Jump (hold ←/→ for a forward/back arc) | ↑ or W | `^` |
-| Crouch (hold) | ↓ or S | `v` |
-| Punch (fast, 1× damage) | **J** | `J` |
-| Kick (slower, longer reach, 1.5×) | **K** | `K` |
-| Special move (3×, 3 s cooldown) | **L** | `L` |
-| Start / confirm / restart | Space / Enter | `START` |
-| Menus | arrows | `<` `>` |
+| Move | ← / → or A / D | ◀ ▶ |
+| Jump (hold ←/→ for a forward/back arc) | ↑ or W | ▲ |
+| Crouch (hold) | ↓ or S | ▼ |
+| Punch (fast, 1× damage) | **J** | `PUNCH` |
+| Kick (slower, longer reach, 1.5×) | **K** | `KICK` |
+| Special move (3×, 3 s cooldown) | **L** | `SP` (glows when ready) |
+| Pause (resume / restart / quit) | **P** or Esc | ❚❚ |
+| Start / confirm / skip | Space / Enter, or click | tap the screen |
+| Menus | arrows, or hover + click | tap a fighter / button |
 | Back | Esc | |
-| Mute | **M** | `M` |
+| Mute | **M** | speaker button |
 | Hitbox overlay (debug) | H | |
 
-On-screen buttons appear automatically on touch devices.
+On-screen buttons appear automatically on touch devices. During a round they show the full pad;
+in menus everything is tapped directly (tap a fighter to pick it, tap it again to fight).
+Switching tabs mid-round pauses the game.
 
 ## How it plays
 

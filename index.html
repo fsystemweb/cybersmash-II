@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>CYBER SMASH II</title>
 <meta name="description" content="CYBER SMASH II - wreck the Cyberchunk in under 40 seconds. A 3D arcade bonus-stage parody built with three.js.">
 <style>
@@ -13,27 +13,33 @@
   #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   /* HUD is drawn at the low internal resolution and upscaled with hard pixels. */
   #hud { image-rendering: pixelated; image-rendering: crisp-edges; pointer-events: none; }
-  /* On-screen touch controls (only shown on touch devices). */
-  #touch { position: absolute; inset: 0; pointer-events: none; }
+  /* On-screen touch controls (only shown on touch devices). Labels are pixel-font images set at runtime. */
+  #touch { position: absolute; inset: 0; pointer-events: none; --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px); --safe-b: env(safe-area-inset-bottom, 0px); }
   #touch[hidden] { display: none; }
   #touch button {
-    position: absolute; pointer-events: auto; touch-action: none;
-    width: 11%; aspect-ratio: 1; border: 3px solid #000; border-radius: 18%;
-    background: rgba(40, 20, 70, 0.55); color: #fff; font: bold 3.2vmin monospace;
-    box-shadow: inset 0 -4px 0 rgba(0,0,0,0.45); opacity: 0.8;
+    position: absolute; pointer-events: auto; touch-action: none; padding: 0; color: transparent;
+    width: 11%; aspect-ratio: 1; min-width: 44px; min-height: 44px; border: 3px solid #000; border-radius: 22%;
+    background: rgba(28, 14, 52, 0.62) no-repeat center / 80% auto; image-rendering: pixelated;
+    box-shadow: inset 0 0 0 1px rgba(200, 184, 255, 0.45), inset 0 -5px 0 rgba(0, 0, 0, 0.45), 0 2px 0 rgba(0, 0, 0, 0.35);
+    opacity: 0.82; transition: transform 60ms, opacity 120ms; -webkit-tap-highlight-color: transparent;
   }
-  #touch button.on { background: rgba(255, 210, 60, 0.75); color: #000; }
+  #touch button.on { background-color: rgba(255, 210, 60, 0.85); transform: translateY(2px) scale(0.96); box-shadow: inset 0 0 0 1px #fff, inset 0 3px 0 rgba(0, 0, 0, 0.25); opacity: 1; }
+  #touch button:focus-visible { outline: 2px solid #ffd23a; outline-offset: 2px; }
   /* d-pad: 9%-wide buttons are 16% of the 16:9 stage's height tall */
   #touch [data-a=left], #touch [data-a=right], #touch [data-a=up], #touch [data-a=down] { width: 9%; }
-  #touch [data-a=left] { left: 1%; bottom: 18%; }
-  #touch [data-a=right] { left: 19%; bottom: 18%; }
-  #touch [data-a=up] { left: 10%; bottom: 35%; }
-  #touch [data-a=down] { left: 10%; bottom: 1%; }
-  #touch [data-a=punch] { right: 26%; bottom: 6%; }
-  #touch [data-a=kick] { right: 14%; bottom: 14%; }
-  #touch [data-a=special] { right: 2%; bottom: 22%; background: rgba(255, 60, 110, 0.6); }
-  #touch [data-a=confirm] { left: 44.5%; bottom: 3%; width: 11%; aspect-ratio: 2.2; font-size: 2.4vmin; }
-  #touch [data-a=mute] { right: 2%; top: 30%; width: 7%; font-size: 2vmin; }
+  #touch [data-a=left] { left: calc(1% + var(--safe-l)); bottom: calc(18% + var(--safe-b)); }
+  #touch [data-a=right] { left: calc(19% + var(--safe-l)); bottom: calc(18% + var(--safe-b)); }
+  #touch [data-a=up] { left: calc(10% + var(--safe-l)); bottom: calc(35% + var(--safe-b)); }
+  #touch [data-a=down] { left: calc(10% + var(--safe-l)); bottom: calc(1% + var(--safe-b)); }
+  #touch [data-a=punch] { right: calc(26% + var(--safe-r)); bottom: calc(6% + var(--safe-b)); }
+  #touch [data-a=kick] { right: calc(14% + var(--safe-r)); bottom: calc(14% + var(--safe-b)); }
+  #touch [data-a=special] { right: calc(2% + var(--safe-r)); bottom: calc(22% + var(--safe-b)); background-color: rgba(200, 40, 100, 0.62); }
+  #touch [data-a=special].ready { background-color: rgba(255, 60, 110, 0.9); box-shadow: inset 0 0 0 2px #ffd23a, 0 0 0 2px rgba(255, 210, 60, 0.6); opacity: 1; }
+  #touch [data-a=mute], #touch [data-a=pause] { top: 22%; width: 6.5%; }
+  #touch [data-a=mute] { right: calc(2% + var(--safe-r)); }
+  #touch [data-a=pause] { left: calc(1% + var(--safe-l)); }
+  /* menus are tapped directly, so they only keep the sound button; the round shows the full pad */
+  #touch[data-mode=tap] button:not([data-a=mute]) { display: none; }
 </style>
 <!-- The only dependency: three.js, pinned. -->
 <script type="importmap">
@@ -44,11 +50,11 @@
 <div id="stage">
   <canvas id="gl"></canvas>
   <canvas id="hud" width="960" height="540"></canvas>
-  <div id="touch" hidden>
-    <button data-a="left">&lt;</button><button data-a="right">&gt;</button>
-    <button data-a="up">^</button><button data-a="down">v</button>
-    <button data-a="punch">J</button><button data-a="kick">K</button><button data-a="special">L</button>
-    <button data-a="confirm">START</button><button data-a="mute">M</button>
+  <div id="touch" hidden data-mode="tap">
+    <button data-a="left" aria-label="Left"></button><button data-a="right" aria-label="Right"></button>
+    <button data-a="up" aria-label="Jump"></button><button data-a="down" aria-label="Crouch"></button>
+    <button data-a="punch" aria-label="Punch"></button><button data-a="kick" aria-label="Kick"></button><button data-a="special" aria-label="Special"></button>
+    <button data-a="mute" aria-label="Sound"></button><button data-a="pause" aria-label="Pause"></button>
   </div>
 </div>
 <script type="module">
@@ -124,16 +130,25 @@ const KEYMAP = {
   up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
   punch: ['KeyJ'], kick: ['KeyK'], special: ['KeyL'],
   confirm: ['Enter', 'Space', 'NumpadEnter'], back: ['Escape', 'Backspace'],
-  mute: ['KeyM'], debug: ['KeyH'],
+  mute: ['KeyM'], pause: ['KeyP'], debug: ['KeyH'],
 };
 const Input = {
   held: new Set(),      // physical key codes currently down
   pressed: new Set(),   // actions pressed since the last sim tick
   virtual: new Set(),   // actions held by touch buttons
+  touch: false,         // true once the on-screen pad is shown (hints switch from keys to taps)
+  tap: null,            // {x, y} in 480x270 HUD units: a click / tap on the stage since the last tick
+  hover: null,          // last mouse position in HUD units
+  hoverMoved: false,
   isDown(action) { return KEYMAP[action].some((k) => this.held.has(k)) || this.virtual.has(action); },
   wasPressed(action) { return this.pressed.has(action); },
   press(action) { this.pressed.add(action); },
-  endTick() { this.pressed.clear(); },
+  endTick() { this.pressed.clear(); this.tap = null; this.hoverMoved = false; },
+  /** Index of the [x, y, w, h] rect tapped this tick (or hovered by a moving mouse with `hover`), else -1. */
+  pick(rects, hover = false) {
+    const p = this.tap || (hover && this.hoverMoved ? this.hover : null);
+    return p ? rects.findIndex(([x, y, w, h]) => p.x >= x && p.x < x + w && p.y >= y && p.y < y + h) : -1;
+  },
 };
 const CODE_TO_ACTION = {};
 for (const [action, codes] of Object.entries(KEYMAP)) for (const c of codes) (CODE_TO_ACTION[c] ||= []).push(action);
@@ -147,10 +162,21 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('keyup', (e) => Input.held.delete(e.code));
 
+/* ---------- Pointer: clicks / taps on the stage (outside the touch buttons) drive the menus ---------- */
+(() => {
+  const stage = document.getElementById('stage');
+  const toHud = (e) => {
+    const r = stage.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * CONFIG.LOW_W, y: ((e.clientY - r.top) / r.height) * CONFIG.LOW_H };
+  };
+  stage.addEventListener('pointerdown', (e) => { if (!e.target.closest('#touch button')) Input.tap = toHud(e); });
+  stage.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') { Input.hover = toHud(e); Input.hoverMoved = true; } });
+})();
+
 /* ---------- Touch buttons: held actions go in Input.virtual, every tap is also an edge press ---------- */
 (() => {
   const pad = document.getElementById('touch');
-  const show = () => { pad.hidden = false; };
+  const show = () => { pad.hidden = false; Input.touch = true; };
   if (matchMedia('(pointer: coarse)').matches) show();
   addEventListener('touchstart', show, { once: true, passive: true });
   for (const b of pad.querySelectorAll('button')) {
@@ -3059,6 +3085,7 @@ const ComicText = (() => {
  * 9. HUD — everything drawn on the 480x270 overlay canvas: bouncy numbers, plates,
  *    announcement banners and speech bubbles anchored to 3D positions.
  * ===================================================================================== */
+const ARROW_CAPS = new Set(['<', '>', '^', 'v']);
 const HUD = (() => {
   const W = CONFIG.LOW_W, H = CONFIG.LOW_H;
   const pops = new Map();     // key -> { v, t } for the bounce-on-change effect
@@ -3099,6 +3126,59 @@ const HUD = (() => {
       ctx.fillStyle = rim;                                              // inner rim, one hi-res pixel
       ctx.fillRect(x + 0.5, y + 0.5, w - 1, 0.5); ctx.fillRect(x + 0.5, y + h - 1, w - 1, 0.5);
       ctx.fillRect(x + 0.5, y + 0.5, 0.5, h - 1); ctx.fillRect(x + w - 1, y + 0.5, 0.5, h - 1);
+    },
+    /** Width of a keycap for `label` ('<' '>' '^' 'v' draw as arrow caps). */
+    capW(label) { return ARROW_CAPS.has(label) ? 11 : Math.max(11, PixelFont.measure(label) + 6); },
+    /** A little bevelled keyboard key with a dark label; returns its width. */
+    keycap(ctx, label, x, y, hot = false) {
+      const w = this.capW(label);
+      ctx.fillStyle = '#000'; ctx.fillRect(x - 1, y - 1, w + 2, 12);
+      ctx.fillStyle = hot ? '#c08a10' : '#7a6ab8'; ctx.fillRect(x, y, w, 10);              // side / lip
+      ctx.fillStyle = hot ? '#ffe27a' : '#ece6ff'; ctx.fillRect(x, y, w, 8.5);             // face
+      ctx.fillStyle = '#fff'; ctx.fillRect(x + 0.5, y + 0.5, w - 1, 0.5);
+      ctx.fillStyle = '#1a1030';
+      if (label === '>') for (let i = 0; i < 4; i++) ctx.fillRect(x + 4 + i, y + 0.5 + i, 1, 7 - 2 * i);
+      else if (label === '<') for (let i = 0; i < 4; i++) ctx.fillRect(x + 6 - i, y + 0.5 + i, 1, 7 - 2 * i);
+      else if (label === '^') for (let i = 0; i < 4; i++) ctx.fillRect(x + 5 - i, y + 2 + i, 1 + 2 * i, 1);
+      else if (label === 'v') for (let i = 0; i < 4; i++) ctx.fillRect(x + 5 - i, y + 5 - i, 1 + 2 * i, 1);
+      else PixelFont.draw(ctx, label, x + 3, y + 1, { color: '#1a1030', outline: 0 });
+      return w;
+    },
+    /**
+     * A centred row of control hints: items are [keys[], label]. Keys are drawn as keycaps,
+     * labels in the pixel font. Returns the row width.
+     */
+    hints(ctx, items, cx, y, color = '#ece6ff') {
+      const itemW = ([keys, label]) => keys.reduce((a, k) => a + this.capW(k) + 2, 0) + 2 + PixelFont.measure(label);
+      const gap = 12, w = items.reduce((a, it) => a + itemW(it), 0) + gap * (items.length - 1);
+      let x = Math.round(cx - w / 2);
+      for (const [keys, label] of items) {
+        for (const k of keys) x += this.keycap(ctx, k, x, y) + 2;
+        x += 2 + PixelFont.draw(ctx, label, x + 2, y + 1, { color }) + gap;
+      }
+      return w;
+    },
+    /** A menu button plate: highlighted when `on` (pulsing pointer + warm border). */
+    button(ctx, label, x, y, w, h, on, t = 0) {
+      this.plate(ctx, x, y, w, h, on ? 'rgba(90,40,120,0.92)' : 'rgba(18,8,36,0.8)', on ? '#ffd23a' : '#000', on ? 'rgba(255,240,170,0.7)' : 'rgba(150,120,255,0.35)');
+      const ty = y + Math.round((h - 14) / 2);
+      if (on) {
+        const nudge = Math.round(Math.sin(t * 10) * 1.5);
+        PixelFont.draw(ctx, '>', x + 6 + nudge, ty, { scale: 2, color: ['#ffffff', '#ffd23a'] });
+      }
+      PixelFont.draw(ctx, label, x + w / 2 + (on ? 6 : 0), ty, { scale: 2, align: 'center', color: on ? ['#ffffff', '#ffd23a'] : '#a898d8' });
+    },
+    /** Pulsing red glow on the screen edges (the clock is running out). */
+    edgeWarn(ctx, k) {
+      if (k <= 0) return;
+      const d = 34;
+      const side = (x0, y0, x1, y1, x, y, w, h) => {
+        const g = ctx.createLinearGradient(x0, y0, x1, y1);
+        g.addColorStop(0, `rgba(255,30,60,${0.42 * k})`); g.addColorStop(1, 'rgba(255,30,60,0)');
+        ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+      };
+      side(0, 0, d, 0, 0, 0, d, H); side(W, 0, W - d, 0, W - d, 0, d, H);
+      side(0, H, 0, H - d, 0, H - d, W, d);
     },
     /** A framed portrait (drawn from a 2x-resolution canvas so it stays crisp). */
     portrait(ctx, img, x, y, w, h, border = '#ffd23a') {
@@ -3158,6 +3238,48 @@ const HUD = (() => {
         });
         ctx.globalAlpha = 1;
       }
+    },
+  };
+})();
+
+/* ---------- Touch button faces: pixel-art labels rendered once into data URLs ---------- */
+const TouchPad = (() => {
+  const pad = document.getElementById('touch');
+  const btn = (a) => pad.querySelector(`[data-a=${a}]`);
+  const face = (draw, w = 32, h = 32) => { const [c, x] = makeCanvas(w, h); draw(x, w, h); return `url(${c.toDataURL()})`; };
+  const text = (label, scale = 1, color = '#fff', w = 32, h = 32) =>
+    face((x) => PixelFont.draw(x, label, w / 2, Math.round(h / 2 - 3.5 * scale), { scale, align: 'center', color, outline: 1 }), w, h);
+  // an outlined pixel triangle pointing right, rotated in 90-degree steps
+  const arrow = (turns) => face((x) => {
+    x.translate(16, 16); x.rotate(turns * Math.PI / 2); x.translate(-16, -16);
+    const tri = (grow, col) => { x.fillStyle = col; for (let i = 0; i < 8; i++) x.fillRect(12 + i - grow, 9 + i - grow, 1 + 2 * grow, 15 - 2 * i + 2 * grow); };
+    tri(1, '#000'); tri(0, '#ece6ff');
+  });
+  const speaker = (muted) => face((x) => {
+    const px = (c, r, w = 1, h = 1) => x.fillRect(6 + c * 2, 9 + r * 2, w * 2, h * 2);
+    const draw = () => {
+      px(0, 2, 3, 3); px(3, 1, 1, 5); px(4, 0, 1, 7);
+      if (muted) { px(6, 1); px(7, 2); px(8, 3); px(7, 4); px(6, 5); px(8, 1); px(6, 3); px(8, 5); }
+      else { px(6, 2, 1, 3); px(8, 1, 1, 5); }
+    };
+    x.save(); x.fillStyle = '#000'; for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) { x.translate(dx, dy); draw(); x.translate(-dx, -dy); } x.restore();
+    x.fillStyle = muted ? '#ff8a9a' : '#b8ffc8'; draw();
+  });
+  const faces = {
+    left: arrow(2), right: arrow(0), up: arrow(3), down: arrow(1),
+    punch: text('PUNCH'), kick: text('KICK'), special: text('SP', 2, ['#ffffff', '#ffd23a']),
+    pause: face((x) => { x.fillStyle = '#000'; x.fillRect(9, 8, 6, 16); x.fillRect(17, 8, 6, 16); x.fillStyle = '#ece6ff'; x.fillRect(10, 9, 4, 14); x.fillRect(18, 9, 4, 14); }),
+    sound: speaker(false), muted: speaker(true),
+  };
+  for (const [a, url] of Object.entries(faces)) if (btn(a)) btn(a).style.backgroundImage = url;
+  let mode = '', muted = null, ready = null;
+  return {
+    /** Show only the buttons that matter right now; keep the speaker and special glow in sync. */
+    sync(m, isMuted, spReady) {
+      if (pad.hidden) return;
+      if (m !== mode) { mode = m; pad.dataset.mode = m; }
+      if (isMuted !== muted) { muted = isMuted; btn('mute').style.backgroundImage = isMuted ? faces.muted : faces.sound; }
+      if (spReady !== ready) { ready = spReady; btn('special').classList.toggle('ready', spReady); }
     },
   };
 })();
@@ -3429,7 +3551,7 @@ const CONDITION_COL = ['#7dff9a', '#c8f060', '#ffd23a', '#ff8a3a', '#ff3a4a'];
 const States = {
   title: {
     enter() { Game.view = 'harbor'; Truck.reset(); Salesman.reset(); },
-    update() { if (Input.wasPressed('confirm')) { Sound.play('confirm'); setState('select'); } },
+    update() { if (Input.wasPressed('confirm') || Input.tap) { Sound.play('confirm'); setState('select'); } },
     frame() {
       // slow cinematic sweep across the harbor
       const a = Math.sin(Stage.time * 0.12) * 0.75;
@@ -3445,15 +3567,29 @@ const States = {
       PixelFont.draw(ctx, 'SMASH', sx, 94 + drop * 80, { scale: 8, color: ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'], outline: 3, pop: 1 + Math.sin(t * 3) * 0.02 });
       const stamp = Math.max(0, Math.min(1, (t - 0.45) * 5));
       if (stamp > 0) PixelFont.draw(ctx, 'II', sx + sw + gap, 94, { scale: 8, color: ['#e0fcff', '#6bf3ff', '#3c9aff', '#b03cff'], outline: 3, pop: 1 + (1 - stamp) * 1.5 + Math.sin(t * 3 + 1.5) * 0.02 });
-      PixelFont.draw(ctx, 'THE BONUS STAGE OF THE CENTURY', 240, 160, { align: 'center', color: '#ffd8f0' });
-      if (Math.floor(t * 2.5) % 2 === 0) PixelFont.draw(ctx, 'PRESS ENTER', 240, 186, { scale: 2, align: 'center' });
-      PixelFont.draw(ctx, 'ARROWS/WASD MOVE, JUMP, CROUCH  J PUNCH  K KICK  L SPECIAL  M MUTE', 240, 236, { align: 'center', color: '#c8b8ff' });
-      PixelFont.draw(ctx, '(C) 199X NOT-A-REAL-CORP. NO CYBERCHUNKS WERE HARMED... MUCH.', 240, 254, { align: 'center', color: '#8a7ab8', outline: 0 });
+      // tagline on a dark ribbon so it reads over the moving harbor
+      const tw = PixelFont.measure('THE BONUS STAGE OF THE CENTURY') + 16;
+      HUD.plate(ctx, 240 - tw / 2, 156, tw, 13, 'rgba(18,8,36,0.72)');
+      PixelFont.draw(ctx, 'THE BONUS STAGE OF THE CENTURY', 240, 159, { align: 'center', color: '#ffd8f0' });
+      if (Math.floor(t * 2.5) % 2 === 0) PixelFont.draw(ctx, Input.touch ? 'TAP TO START' : 'PRESS ENTER', 240, 180, { scale: 2, align: 'center', color: ['#ffffff', '#fff36b'] });
+      // controls card (the touch pad labels its own buttons)
+      if (!Input.touch && t > 0.6) {
+        ctx.globalAlpha = clamp((t - 0.6) / 0.3, 0, 1);
+        HUD.plate(ctx, 82, 204, 316, 38);
+        HUD.hints(ctx, [[['<', '>'], 'MOVE'], [['^'], 'JUMP'], [['v'], 'CROUCH'], [['P'], 'PAUSE'], [['M'], 'SOUND']], 240, 209);
+        HUD.hints(ctx, [[['J'], 'PUNCH'], [['K'], 'KICK'], [['L'], 'SPECIAL']], 240, 225, '#fff36b');
+        ctx.globalAlpha = 1;
+      }
+      if (Game.best > 0) PixelFont.draw(ctx, `BEST ${String(Game.best).padStart(7, '0')}`, 474, 6, { align: 'right', color: '#fff36b' });
+      PixelFont.draw(ctx, '(C) 199X NOT-A-REAL-CORP. NO CYBERCHUNKS WERE HARMED... MUCH.', 240, 257, { align: 'center', color: '#a898d8', outline: 1 });
     },
   },
 
   /* ---------- Character select: six fighters on pedestals + a portrait grid ---------- */
   select: {
+    PLATE: [110, 34, 260, 42],
+    ARROWS: [[84, 34, 24, 42], [372, 34, 24, 42]],
+    cardRect: (i) => [100 + i * 48 - 4, 196, 48, 50],
     slotX: (i) => (i - 2.5) * 2.4,
     slotZ: (i) => -Math.abs(i - 2.5) * 0.35,
     enter() {
@@ -3484,9 +3620,16 @@ const States = {
         this.confirmT += dt;
         if (this.confirmT > 0.95) setState('vs');
       } else {
-        if (Input.wasPressed('left')) { Game.fighterIndex = (Game.fighterIndex + n - 1) % n; Sound.play('blip'); }
-        if (Input.wasPressed('right')) { Game.fighterIndex = (Game.fighterIndex + 1) % n; Sound.play('blip'); }
-        if (Input.wasPressed('confirm')) { this.confirmT = 0; Post.uniforms.uFlash.value = 0.7; Sound.play('confirm'); }
+        // mouse / touch: tap a portrait to pick it, tap it again (or the name plate) to fight; arrows cycle
+        const cards = FIGHTERS.map((_, i) => this.cardRect(i));
+        const hov = Input.pick(cards, true), tap = Input.pick(cards);
+        const arrow = Input.pick(this.ARROWS);
+        let go = Input.wasPressed('confirm') || Input.pick([this.PLATE]) === 0;
+        if (tap >= 0 && tap === Game.fighterIndex) go = true;
+        else if (tap >= 0 || (hov >= 0 && hov !== Game.fighterIndex)) { Game.fighterIndex = tap >= 0 ? tap : hov; Sound.play('blip'); }
+        if (Input.wasPressed('left') || arrow === 0) { Game.fighterIndex = (Game.fighterIndex + n - 1) % n; Sound.play('blip'); }
+        if (Input.wasPressed('right') || arrow === 1) { Game.fighterIndex = (Game.fighterIndex + 1) % n; Sound.play('blip'); }
+        if (go) { this.confirmT = 0; Post.uniforms.uFlash.value = 0.7; Sound.play('confirm'); }
         if (Input.wasPressed('back')) setState('title');
       }
       this.slots.forEach((s, i) => {
@@ -3515,21 +3658,36 @@ const States = {
       PixelFont.draw(ctx, def.name, 240, 38, { scale: 2, align: 'center', color: ['#ffffff', def.color], pop: HUD.pop('selname', Game.fighterIndex) });
       PixelFont.draw(ctx, 'SPECIAL: ' + def.special, 240, 55, { align: 'center', color: '#ffd23a' });
       PixelFont.draw(ctx, def.tag, 240, 66, { align: 'center', color: '#c8b8ff', outline: 0 });
-      // portrait grid
-      const size = 40, gap = 8, w = FIGHTERS.length * (size + gap) - gap, x0 = 240 - w / 2, y0 = 200;
+      // cycle arrows beside the name plate, nudging outward
+      const nudge = Math.round(Math.abs(Math.sin(t * 5)) * 3);
+      PixelFont.draw(ctx, '<', 98 - nudge, 45, { scale: 3, align: 'center', color: ['#ffffff', '#ffd23a'] });
+      PixelFont.draw(ctx, '>', 382 + nudge, 45, { scale: 3, align: 'center', color: ['#ffffff', '#ffd23a'] });
+      // portrait grid: the selected card lifts and gets blinking corner brackets
+      const size = 40, gap = 8, w = FIGHTERS.length * (size + gap) - gap, x0 = 240 - w / 2;
       FIGHTERS.forEach((d, i) => {
-        const x = x0 + i * (size + gap), sel = i === Game.fighterIndex;
+        const sel = i === Game.fighterIndex, x = x0 + i * (size + gap), y0 = sel ? 197 : 200;
+        ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(x - 1, 203, size + 4, size + 2);
         ctx.fillStyle = '#000'; ctx.fillRect(x - 2, y0 - 2, size + 4, size + 4);
         ctx.fillStyle = sel ? d.color : '#3a2a5a'; ctx.fillRect(x - 1, y0 - 1, size + 2, size + 2);
         const g = ctx.createLinearGradient(0, y0, 0, y0 + size);
         g.addColorStop(0, sel ? '#4a2a7a' : '#22143c'); g.addColorStop(1, sel ? '#ff5a8a' : '#3a1a4a');
         ctx.fillStyle = g; ctx.fillRect(x, y0, size, size);
-        ctx.globalAlpha = sel ? 1 : 0.7;
+        ctx.globalAlpha = sel ? 1 : 0.6;
         ctx.drawImage(this.portraits[i], x, y0, size, size);
         ctx.globalAlpha = 1;
-        if (sel && Math.floor(t * 4) % 2 === 0) PixelFont.draw(ctx, '1P', x + size / 2, y0 - 11, { align: 'center', color: '#ffd23a' });
+        if (sel && this.confirmT >= 0 && Math.floor(this.confirmT * 12) % 2 === 0) { ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.fillRect(x, y0, size, size); }
+        if (sel) {
+          const o = 4 + (Math.floor(t * 4) % 2), L = 6;
+          ctx.fillStyle = '#ffd23a';
+          for (const [cx, cy, sx, sy] of [[x - o, y0 - o, 1, 1], [x + size + o, y0 - o, -1, 1], [x - o, y0 + size + o, 1, -1], [x + size + o, y0 + size + o, -1, -1]]) {
+            ctx.fillRect(sx > 0 ? cx : cx - L, sy > 0 ? cy : cy - 1.5, L, 1.5);
+            ctx.fillRect(sx > 0 ? cx : cx - 1.5, sy > 0 ? cy : cy - L, 1.5, L);
+          }
+          PixelFont.draw(ctx, '1P', x + size / 2, y0 - 14, { align: 'center', color: ['#ffffff', '#ffd23a'] });
+        }
       });
-      PixelFont.draw(ctx, '< > CHOOSE    ENTER CONFIRM    ESC BACK', 240, 252, { align: 'center', color: '#8a7ab8' });
+      if (Input.touch) PixelFont.draw(ctx, 'TAP A FIGHTER - TAP AGAIN TO FIGHT', 240, 255, { align: 'center', color: '#ece6ff' });
+      else HUD.hints(ctx, [[['<', '>'], 'CHOOSE'], [['ENTER'], 'FIGHT!'], [['ESC'], 'BACK']], 240, 253);
     },
   },
 
@@ -3546,7 +3704,7 @@ const States = {
     exit() { Post.uniforms.uTint.value.setScalar(1); Post.uniforms.uFlash.value = 0; },
     update() {
       if (!this.slam && Game.stateTime > 0.38) { this.slam = true; Post.uniforms.uFlash.value = 0.85; Sound.play('slam'); }
-      if (Game.stateTime > this.DUR || (Game.stateTime > 0.5 && Input.wasPressed('confirm'))) setState('fight');
+      if (Game.stateTime > this.DUR || (Game.stateTime > 0.5 && (Input.wasPressed('confirm') || Input.tap))) setState('fight');
     },
     frame(dt) {
       const a = -0.9 + Game.stateTime * 0.2, tx = Truck.root.position.x;
@@ -3584,7 +3742,11 @@ const States = {
         const jit = t < 0.7 ? Math.round(Math.sin(t * 90) * 2) : 0;
         PixelFont.draw(ctx, 'VS', 240 + jit, 88, { scale: 9, align: 'center', outline: 3, pop: lerp(3, 1, k) + Math.sin(t * 6) * 0.03, color: ['#ffffff', '#fff36b', '#ff9a3c', '#ff3c6e'] });
       }
-      PixelFont.draw(ctx, 'STAGE: DOCK 7 AT SUNSET', 240, 236, { align: 'center', color: '#ffd8f0' });
+      PixelFont.draw(ctx, 'STAGE: DOCK 7 AT SUNSET', 240, 230, { align: 'center', color: '#ffd8f0' });
+      if (t > 0.5) {
+        if (Input.touch) PixelFont.draw(ctx, 'TAP TO SKIP', 474, 258, { align: 'right', color: '#c8b8ff' });
+        else { ctx.globalAlpha = clamp((t - 0.5) / 0.3, 0, 1); HUD.hints(ctx, [[['ENTER'], 'SKIP']], 440, 255, '#c8b8ff'); ctx.globalAlpha = 1; }
+      }
     },
   },
 
@@ -3623,11 +3785,12 @@ const States = {
       const f = Game.fighter;
       this.phaseT += dt;
       if (Input.wasPressed('debug')) Combat.toggleDebug();
+      if ((this.phase === 'announce' || this.phase === 'play') && (Input.wasPressed('pause') || Input.wasPressed('back'))) { Pause.open(); return; }
       if (this.phase === 'intro') {
         f.update(dt, false);
         const sAnchor = headAnchor(Salesman.rig, 1.0);
         this.pitch.forEach((line, i) => this.at(0.2 + i * 1.55, 'pitch' + i, () => HUD.say('salesman', line, sAnchor, { dur: i === 2 ? 2.0 : 1.45, cps: 40 })));
-        if (this.phaseT > this.INTRO || Input.wasPressed('confirm')) this.setPhase('announce');
+        if (this.phaseT > this.INTRO || Input.wasPressed('confirm') || Input.tap) this.setPhase('announce');
       } else if (this.phase === 'announce') {
         this.at(0, 'start', () => {
           HUD.hush('salesman');
@@ -3698,7 +3861,7 @@ const States = {
         });
         this.at(2.4, 'line', () => HUD.say('fighter', def.lose, fAnchor, { dur: 2.8 }));
       }
-      if (this.phaseT > 5.4 || (this.phaseT > 1.5 && Input.wasPressed('confirm'))) this.finish();
+      if (this.phaseT > 5.4 || (this.phaseT > 1.5 && (Input.wasPressed('confirm') || Input.tap))) this.finish();
     },
     finish() {
       const score = Combat.stats.score;
@@ -3754,17 +3917,24 @@ const States = {
         PixelFont.draw(ctx, String(sc).padStart(7, '0'), 46, 19, { scale: 2, pop: HUD.pop('score', Combat.stats.score, 0.12) });
         const f = Game.fighter, charge = f ? clamp(f.specialCharge, 0, 1) : 0;
         const ready = charge >= 1 && f.mode !== 'special';
-        PixelFont.draw(ctx, 'SP', 10, 42, { color: '#ffd23a' });
+        PixelFont.draw(ctx, 'SP', 10, 42, { color: ready ? ['#ffffff', '#ffd23a'] : '#ffd23a' });
         drawBar(ctx, 26, 43, 92, 4, charge, charge, false,
           ready ? (Math.floor(Stage.time * 8) % 2 ? ['#ffffff', '#ffffff', '#c8c8ff'] : ['#ffffff', def.color, def.color]) : ['#c8b8ff', '#8a7ad8', '#5a4aa8']);
-        if (ready && this.phase === 'play') PixelFont.draw(ctx, 'READY! L', 168, 41, { align: 'right', color: ['#ffffff', '#ffd23a'], pop: HUD.pop('spready', ready, 0.3) });
+        if (ready && this.phase === 'play') {
+          const pop = HUD.pop('spready', ready, 0.3);
+          if (Input.touch) PixelFont.draw(ctx, 'READY!', 168, 41, { align: 'right', color: ['#ffffff', '#ffd23a'], pop });
+          else { PixelFont.draw(ctx, 'READY!', 152, 41, { align: 'right', color: ['#ffffff', '#ffd23a'], pop }); HUD.keycap(ctx, 'L', 156, 40, true); }
+        } else if (this.phase === 'play' && f && f.mode !== 'special') {
+          PixelFont.draw(ctx, `${String(Math.floor(charge * 100)).padStart(3, ' ')}%`, 168, 41, { align: 'right', color: '#8a7ad8', outline: 1 });
+        }
         if (f && f.mode === 'special') {
           f.special.hud?.(ctx, f, f.modeT);
           if (scene.overrideMaterial && Math.floor(Stage.time * 6) % 2 === 0) PixelFont.draw(ctx, 'ENTERING THE METAVERSE...', 240, 60, { align: 'center', color: '#58e8ff' });
         }
-        // --- centre: the big countdown ---
+        // --- centre: the big countdown (and a red pulse on the screen edges in the last 10 seconds) ---
         const secs = Math.ceil(this.timer);
         const low = secs <= 10 && this.phase === 'play';
+        if (low) HUD.edgeWarn(ctx, (secs <= 5 ? 1 : 0.5) * (0.55 + 0.45 * Math.cos((this.timer % 1) * Math.PI * 2)));
         HUD.plate(ctx, 214, 3, 52, 38, 'rgba(18,8,36,0.85)', '#000', 'rgba(255,210,58,0.6)');
         const shake = secs <= 5 && this.phase === 'play' ? Math.round(Math.sin(Stage.time * 50)) : 0;
         PixelFont.draw(ctx, String(secs).padStart(2, '0'), 240 + shake, 9, {
@@ -3777,6 +3947,8 @@ const States = {
         HUD.portrait(ctx, this.truckIcon, 430, 9, 40, 30, '#9ab8ff');
         PixelFont.draw(ctx, 'CYBERCHUNK', 424, 8, { align: 'right', color: '#fff36b' });
         drawBar(ctx, 278, 19, 146, 11, Truck.hp / Truck.maxHP, Truck.hpLag / Truck.maxHP, true);
+        const hpPct = Math.ceil((Truck.hp / Truck.maxHP) * 100);
+        PixelFont.draw(ctx, `${String(hpPct).padStart(3, ' ')}%`, 278, 42, { color: '#ffffff', pop: HUD.pop('hpPct', Math.floor(hpPct / 10), 0.15) });
         PixelFont.draw(ctx, CONDITION[Truck.stage], 470, 42, { align: 'right', color: CONDITION_COL[Truck.stage], outline: 1, pop: HUD.pop('cond', Truck.stage, 0.3) });
         // --- combo counter ---
         const sinceHit = Stage.time - Combat.stats.lastHitT;
@@ -3787,7 +3959,11 @@ const States = {
         }
         // --- bottom ---
         PixelFont.draw(ctx, `BEST ${String(Game.best).padStart(7, '0')}`, 474, 260, { align: 'right', color: '#c8b8ff' });
-        if (this.phase === 'play' && this.phaseT < 6) PixelFont.draw(ctx, 'UP JUMP  DOWN CROUCH  J PUNCH  K KICK  L SPECIAL', 240, 258, { align: 'center', color: '#ffffff' });
+        if (this.phase === 'play' && this.phaseT < 6 && !Input.touch) {
+          ctx.globalAlpha = clamp((6 - this.phaseT) / 0.5, 0, 1);
+          HUD.hints(ctx, [[['^'], 'JUMP'], [['v'], 'CROUCH'], [['J'], 'PUNCH'], [['K'], 'KICK'], [['L'], 'SPECIAL'], [['P'], 'PAUSE']], 220, 255);
+          ctx.globalAlpha = 1;
+        }
         // --- time bonus tally ---
         if (this.phase === 'end' && this.win && this.phaseT > 0.6) {
           const k = clamp((this.phaseT - 0.8) / 1.2, 0, 1);
@@ -3795,7 +3971,8 @@ const States = {
           PixelFont.draw(ctx, String(Math.round(this.bonus * k)), 240, 144, { scale: 3, align: 'center', color: ['#ffffff', '#ffd23a'], pop: HUD.pop('bonus', Math.round(k * 10)) });
         }
       } else {
-        PixelFont.draw(ctx, 'ENTER TO SKIP', 474, 260, { align: 'right', color: '#c8b8ff' });
+        if (Input.touch) PixelFont.draw(ctx, 'TAP TO SKIP', 474, 258, { align: 'right', color: '#c8b8ff' });
+        else HUD.hints(ctx, [[['ENTER'], 'SKIP']], 440, 255, '#c8b8ff');
       }
       HUD.drawBubbles(ctx);
       HUD.drawBanners(ctx);
@@ -3804,6 +3981,7 @@ const States = {
 
   /* ---------- Results: fighter on a rotating pedestal, stats, best score, retry ---------- */
   results: {
+    BUTTONS: [[18, 192, 206, 19], [18, 215, 206, 19]],
     enter() {
       Game.view = 'showroom';
       const r = Game.lastResult || { win: false, score: 0, hits: 0, timeLeft: 0, bonus: 0, total: 0 };
@@ -3830,7 +4008,10 @@ const States = {
       this.ped.rotation.y = this.model.rig.root.rotation.y = Game.stateTime * 0.6 - 0.4;
       FighterKit.animate(this.model, this.r.win ? 'victory' : 'defeat', Game.stateTime, dt);
       if (Input.wasPressed('up') || Input.wasPressed('down') || Input.wasPressed('left') || Input.wasPressed('right')) { this.choice ^= 1; Sound.play('blip'); }
-      if (Game.stateTime > 0.6 && Input.wasPressed('confirm')) { Sound.play('confirm'); setState(this.choice === 0 ? 'fight' : 'select'); }
+      const hov = Input.pick(this.BUTTONS, true), tap = Game.stateTime > 0.6 ? Input.pick(this.BUTTONS) : -1;
+      if (hov >= 0 && hov !== this.choice) { this.choice = hov; Sound.play('blip'); }
+      if (tap >= 0) this.choice = tap;
+      if (Game.stateTime > 0.6 && (Input.wasPressed('confirm') || tap >= 0)) { Sound.play('confirm'); setState(this.choice === 0 ? 'fight' : 'select'); }
       if (Input.wasPressed('back')) setState('select');
     },
     frame() { CamRig.to(0.3, 1.75, 7.6, 0.75, 1.15, 0, true); },
@@ -3841,7 +4022,7 @@ const States = {
         scale: r.win ? 6 : 4, align: 'center', outline: 2,
         color: r.win ? ['#fffbe0', '#fff36b', '#ff9a3c', '#ff3c6e'] : ['#ffd0e0', '#ff6a8a', '#c02a5a', '#7a1a4a'],
       });
-      HUD.plate(ctx, 10, 58, 222, 168);
+      HUD.plate(ctx, 10, 58, 222, 184);
       PixelFont.draw(ctx, def.name, 121, 64, { align: 'center', color: def.color });
       const k = (d) => clamp((t - d) / 0.8, 0, 1);
       const row = (label, value, y, d, big) => {
@@ -3857,22 +4038,64 @@ const States = {
       PixelFont.draw(ctx, 'SESSION BEST', 18, 170, { color: '#c8b8ff' });
       PixelFont.draw(ctx, String(Game.best), 224, 170, { align: 'right', color: '#ffffff' });
       if (this.newBest && t > 1.8 && Math.floor(t * 3) % 2 === 0) PixelFont.draw(ctx, 'NEW RECORD!', 121, 182, { align: 'center', color: ['#ffffff', '#7dff9a'] });
-      const opt = (label, i, y) => {
-        const on = this.choice === i;
-        PixelFont.draw(ctx, (on ? '> ' : '  ') + label, 30, y, { scale: 2, color: on ? ['#ffffff', '#ffd23a'] : '#8a7ab8', pop: on ? 1 + Math.sin(t * 8) * 0.03 : 1 });
-      };
-      opt('RETRY', 0, 196);
-      opt('CHANGE FIGHTER', 1, 211);
+      HUD.button(ctx, 'RETRY', ...this.BUTTONS[0], this.choice === 0, t);
+      HUD.button(ctx, 'CHANGE FIGHTER', ...this.BUTTONS[1], this.choice === 1, t);
+      if (!Input.touch) HUD.hints(ctx, [[['^', 'v'], 'SELECT'], [['ENTER'], 'OK'], [['ESC'], 'FIGHTERS']], 121, 252, '#c8b8ff');
       HUD.drawBubbles(ctx);
     },
   },
 };
 
+/* ---------- Pause menu: P / Esc / the pad's pause button freeze the round (sim, juice, banners) ---------- */
+const Pause = {
+  on: false, choice: 0, t: 0,
+  ITEMS: ['RESUME', 'RESTART', 'QUIT'],
+  rects: [0, 1, 2].map((i) => [176, 104 + i * 24, 128, 19]),
+  open() {
+    if (this.on) return;
+    this.on = true; this.choice = 0; this.t = 0;
+    Input.virtual.clear();
+    Sound.play('blip');
+  },
+  /** Runs once per rendered frame while open (the simulation is frozen meanwhile). */
+  update(dt) {
+    this.t += dt;
+    const n = this.ITEMS.length;
+    if (Input.wasPressed('mute')) { Sound.toggle(); Game.soundToast = 1.5; }
+    if (Input.wasPressed('up')) { this.choice = (this.choice + n - 1) % n; Sound.play('blip'); }
+    if (Input.wasPressed('down')) { this.choice = (this.choice + 1) % n; Sound.play('blip'); }
+    const hov = Input.pick(this.rects, true), tap = Input.pick(this.rects);
+    if (hov >= 0 && hov !== this.choice) { this.choice = hov; Sound.play('blip'); }
+    if (Input.wasPressed('pause') || Input.wasPressed('back')) this.act(0);
+    else if (tap >= 0) this.act(tap);
+    else if (Input.wasPressed('confirm')) this.act(this.choice);
+    Input.endTick();
+  },
+  act(i) {
+    this.on = false;
+    Sound.play('confirm');
+    if (i === 1) { Game.skipIntro = true; setState('fight'); }
+    else if (i === 2) setState('select');
+  },
+  draw(ctx) {
+    const k = ease(clamp(this.t / 0.12, 0, 1));
+    ctx.fillStyle = `rgba(8,4,20,${0.55 * k})`; ctx.fillRect(0, 0, CONFIG.LOW_W, CONFIG.LOW_H);
+    HUD.plate(ctx, 160, 58, 160, 122, 'rgba(18,8,36,0.9)', '#000', 'rgba(255,210,58,0.55)');
+    PixelFont.draw(ctx, 'PAUSED', 240, 68, { scale: 4, align: 'center', outline: 2, color: ['#ffffff', '#fff36b', '#ff9a3c'], pop: lerp(1.4, 1, k) });
+    this.ITEMS.forEach((label, i) => HUD.button(ctx, label, ...this.rects[i], i === this.choice, this.t));
+    if (!Input.touch) HUD.hints(ctx, [[['^', 'v'], 'SELECT'], [['ENTER'], 'OK'], [['P'], 'RESUME']], 240, 187);
+  },
+};
+document.addEventListener('visibilitychange', () => {
+  // tabbing away mid-round pauses instead of letting the clock run out unseen
+  if (document.hidden && Game.stateName === 'fight' && (States.fight.phase === 'announce' || States.fight.phase === 'play')) Pause.open();
+});
+
 /** Small speaker status in the bottom-left: always when muted, briefly after toggling. */
 function drawSoundStatus(ctx, dt) {
   Game.soundToast = Math.max(0, (Game.soundToast || 0) - dt);
   if (!Sound.muted && Game.soundToast <= 0) return;
-  const x = 6, y = 258;
+  const x = 6, y = Game.stateName === 'fight' ? 242 : 258;   // clear of the fight's control hints
   ctx.fillStyle = '#000'; ctx.fillRect(x - 1, y - 1, 10, 9);
   ctx.fillStyle = Sound.muted ? '#ff5a6a' : '#7dff9a';
   ctx.fillRect(x, y + 2, 3, 3); ctx.fillRect(x + 3, y + 1, 1, 5); ctx.fillRect(x + 4, y, 1, 7);   // speaker
@@ -3914,14 +4137,16 @@ function frame(now) {
   const realDt = Math.min(CONFIG.MAX_FRAME_DT, (now - lastTime) / 1000);
   lastTime = now;
   accumulator += realDt;
-  if (!Game.paused) { Juice.update(realDt); ComicText.update(realDt); }
-  // hit-stop freezes the simulation for a few frames; the debug pause freezes it entirely
-  if (Game.paused || Juice.stop > 0) accumulator = 0;
-  while (accumulator >= SIM_DT) {
+  const frozen = Game.paused || Pause.on;
+  if (!frozen) { Juice.update(realDt); ComicText.update(realDt); }
+  // hit-stop freezes the simulation for a few frames; the debug pause and the pause menu freeze it entirely
+  if (frozen || Juice.stop > 0) accumulator = 0;
+  if (Pause.on) Pause.update(realDt);
+  while (accumulator >= SIM_DT && !Pause.on) {
     simulate(SIM_DT * Game.timeScale);
     accumulator -= SIM_DT;
   }
-  if (!Game.paused) HUD.update(realDt);
+  if (!frozen) HUD.update(realDt);
   Game.state.frame?.(realDt);
   if (Game.camOverride) CamRig.to(...Game.camOverride, true);
   CamRig.update(realDt);
@@ -3936,7 +4161,10 @@ function frame(now) {
   hud.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
   hud.setTransform(CONFIG.HUD_SCALE, 0, 0, CONFIG.HUD_SCALE, 0, 0);   // layout stays in 480x270 units
   Game.state.hud?.(hud);
+  if (Pause.on) Pause.draw(hud);
   drawSoundStatus(hud, realDt);
+  const f = Game.fighter, inRound = Game.stateName === 'fight' && (States.fight.phase === 'announce' || States.fight.phase === 'play');
+  TouchPad.sync(inRound && !Pause.on ? 'fight' : 'tap', Sound.muted, !!(inRound && f && f.specialCharge >= 1 && f.mode !== 'special'));
 
   perf.cpu = lerp(perf.cpu, performance.now() - cpu0, 0.05);   // smoothed CPU ms per frame
   perf.frames++; perf.acc += realDt;
