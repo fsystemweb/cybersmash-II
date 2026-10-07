@@ -287,12 +287,33 @@ async function main() {
   await mp.goto(URL, { waitUntil: 'load' });
   await mp.waitForFunction(() => window.CS && window.CS.ready, null, { timeout: 20000 });
   if (await mp.evaluate(() => document.getElementById('touch').hidden)) problems.push('touch controls hidden on a touch device');
-  await mp.tap('[data-a=confirm]');
-  await mp.waitForFunction(() => CS.state === 'select', null, { timeout: 10000 }).catch(() => problems.push('tapping START did not open select'));
-  const i0 = await mp.evaluate(() => CS.info().fighterIndex);
-  await mp.tap('[data-a=right]');
+  // menus are tapped directly: the screen starts, a portrait picks, tapping it again fights
+  const tapHud = async (x, y) => {
+    const r = await mp.evaluate(() => { const b = document.getElementById('stage').getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; });
+    await mp.touchscreen.tap(r[0] + (x / 480) * r[2], r[1] + (y / 270) * r[3]);
+  };
+  await sleep(500);
+  await tapHud(240, 140);
+  await mp.waitForFunction(() => CS.state === 'select', null, { timeout: 10000 }).catch(() => problems.push('tapping the title did not open select'));
+  await sleep(600);
+  const portrait = (i) => [100 + i * 48 + 20, 220];
+  await tapHud(...portrait(3));
   await sleep(400);
-  if ((await mp.evaluate(() => CS.info().fighterIndex)) === i0) problems.push('tapping > did not change fighter');
+  if ((await mp.evaluate(() => CS.info().fighterIndex)) !== 3) problems.push('tapping a portrait did not pick that fighter');
+  await sleep(800);
+  await mp.screenshot({ path: path.join(OUT, `${String(++shotN).padStart(2, '0')}-mobile-select.png`) });
+  await tapHud(...portrait(3));
+  await mp.waitForFunction(() => CS.state === 'vs', null, { timeout: 10000 }).catch(() => problems.push('tapping the picked portrait again did not start'));
+  // in the round the full pad shows, and its pause button freezes the clock
+  await mp.evaluate(() => CS.debug.quickFight(3));
+  await mp.waitForFunction(() => CS.info().phase === 'play', null, { timeout: 15000 }).catch(() => problems.push('mobile round did not reach play'));
+  await sleep(300);
+  if (!(await mp.isVisible('[data-a=punch]'))) problems.push('punch button not shown during the round');
+  await mp.tap('[data-a=pause]');
+  await sleep(300);
+  const tp0 = await mp.evaluate(() => CS.info().timer);
+  await sleep(700);
+  if ((await mp.evaluate(() => CS.info().timer)) !== tp0) problems.push('pause button did not freeze the clock');
   await sleep(800);
   await mp.screenshot({ path: path.join(OUT, `${String(++shotN).padStart(2, '0')}-mobile.png`) });
   console.log('  shot mobile');
